@@ -1,0 +1,528 @@
+/*
+ * App shell — dark sidebar + rounded content panel (the current Shopify admin layout).
+ * The sidebar is dark in both themes; the panel follows the light / dark theme through
+ * Polaris's own colour tokens, so every page inside keeps working unchanged.
+ */
+.shell {
+  --shell-bg: #111112;
+  --shell-text: #e8e8e8;
+  --shell-text-dim: #a6a6a8;
+  --shell-hover: rgba(255, 255, 255, 0.08);
+  --shell-active: rgba(255, 255, 255, 0.14);
+  --shell-line: rgba(255, 255, 255, 0.1);
+  --shell-sidebar-width: 15.5rem;
+
+  position: fixed;
+  inset: 0;
+  display: flex;
+  background: var(--shell-bg);
+  color: var(--shell-text);
+}
+
+/* ---------- sidebar ---------- */
+.shell-sidebar {
+  flex: none;
+  width: var(--shell-sidebar-width);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.5rem 0.5rem;
+  overflow: hidden;
+}
+
+.shell-top {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding-top: 0.125rem;
+}
+.shell-top .shell-search {
+  flex: 1;
+  min-width: 0;
+}
+.shell-collapse {
+  flex: none;
+}
+@media (max-width: 899px) {
+  .shell-collapse {
+    display: none;
+  }
+}
+
+.shell-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  height: 2.125rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--shell-line);
+  border-radius: 0.625rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--shell-text-dim);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease;
+}
+.shell-search:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.shell-search-icon {
+  display: inline-flex;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+.shell-search-label {
+  flex: 1;
+}
+.shell-kbd {
+  font: inherit;
+  font-size: 0.6875rem;
+  color: var(--shell-text-dim);
+}
+
+.shell-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-top: 0.25rem;
+  scrollbar-width: none;
+}
+.shell-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.shell-section + .shell-section {
+  margin-top: 0.75rem;
+}
+
+.shell-section-title {
+  padding: 0.5rem 0.625rem 0.25rem;
+  color: var(--shell-text-dim);
+  font-size: 0.75rem;
+  font-weight: 550;
+}
+
+.shell-list,
+.shell-sublist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shell-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.shell-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex: 1;
+  min-width: 0;
+  height: 2rem;
+  padding: 0 0.5rem;
+  border-radius: 0.5rem;
+  color: var(--shell-text);
+  font-size: 0.8125rem;
+  font-weight: 550;
+  text-decoration: none;
+  transition: background 120ms ease;
+}
+.shell-item:hover {
+  background: var(--shell-hover);
+}
+.shell-item {
+  position: relative;
+}
+.shell-item[data-active="true"] {
+  background: var(--shell-active);
+  color: #fff;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .shell-item:hover {
+    transform: translate3d(2px, 0, 0);
+  }
+  .shell-item {
+    transition: background 120ms ease, transform var(--dur-fast, 150ms) var(--ease-out, ease);
+  }
+}
+/* The brass marker beside the open page; GSAP slides it between items (see ShellMotion.tsx). */
+.shell-nav {
+  position: relative;
+}
+.shell-pill {
+  position: absolute;
+  left: -0.5rem;
+  top: 0;
+  width: 3px;
+  height: 1rem;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, #e9c46a, #b8862b);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.shell-item-icon {
+  display: inline-flex;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+}
+.shell-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The expand arrow sits inside the right end of the row (absolute, so it never narrows the item's highlight). */
+.shell-chevron {
+  position: absolute;
+  right: 0.25rem;
+  display: inline-flex;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0.125rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--shell-text-dim);
+  cursor: pointer;
+}
+.shell-chevron-icon {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  transition: transform var(--dur-med, 300ms) var(--ease-out, ease);
+}
+.shell-chevron-icon[data-open="true"] {
+  transform: rotate(90deg);
+}
+.shell-chevron:hover {
+  background: var(--shell-hover);
+  color: #fff;
+}
+
+/* A group opens by growing its height (0fr -> 1fr) while its items fade and settle in — nothing is mounted or shoved on the spot. */
+.shell-sub-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 340ms var(--ease-out, ease);
+}
+.shell-sub-wrap[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.shell-sub-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+.shell-sublist {
+  margin: 0.125rem 0 0.375rem 1.25rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--shell-line);
+  opacity: 0;
+  transform: translate3d(0, -6px, 0);
+  transition: opacity 240ms ease, transform 340ms var(--ease-out, ease);
+}
+.shell-sub-wrap[data-open="true"] .shell-sublist {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-sub-wrap,
+  .shell-sublist {
+    transition-duration: 0.01ms;
+  }
+}
+.shell-subitem {
+  display: block;
+  padding: 0.3125rem 0.5rem;
+  border-radius: 0.5rem;
+  color: var(--shell-text-dim);
+  font-size: 0.8125rem;
+  text-decoration: none;
+}
+.shell-subitem:hover {
+  background: var(--shell-hover);
+  color: #fff;
+}
+.shell-subitem[data-active="true"] {
+  background: var(--shell-active);
+  color: #fff;
+  font-weight: 550;
+}
+
+/* ---------- bottom: theme, settings, store ---------- */
+.shell-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--shell-line);
+}
+.shell-bottom .topbar-theme {
+  height: auto;
+  margin: 0 0 0.125rem;
+}
+.shell-bottom .topbar-theme-button {
+  width: 100%;
+  justify-content: flex-start;
+}
+.shell-bottom .topbar-theme > div {
+  /* Polaris wraps the popover's button in a div; without this it shrink-wraps and the button cannot fill the sidebar. */
+  flex: 1;
+  min-width: 0;
+}
+.shell-bottom .topbar-theme-caret {
+  margin-left: auto;
+}
+
+.shell-store {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  border: 0;
+  border-radius: 0.625rem;
+  background: transparent;
+  color: var(--shell-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.shell-store:hover {
+  background: var(--shell-hover);
+}
+.shell-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  border-radius: 0.5rem;
+  background: #7c3aed;
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+.shell-store-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+.shell-store-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #fff;
+}
+.shell-store-domain {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  color: var(--shell-text-dim);
+}
+.shell-store-more {
+  display: inline-flex;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+  color: var(--shell-text-dim);
+}
+
+/* ---------- content panel ---------- */
+.shell-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.5rem 0.5rem 0;
+}
+.shell-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 1rem;
+  background: var(--p-color-bg);
+  color: var(--p-color-text);
+}
+
+/* ---------- command palette ---------- */
+.palette-results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  max-height: 22rem;
+  margin-top: 0.75rem;
+  overflow-y: auto;
+}
+.palette-result {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--p-color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.palette-result[data-active="true"] {
+  background: var(--p-color-bg-surface-hover);
+}
+.palette-label {
+  font-weight: 550;
+}
+.palette-group,
+.palette-empty {
+  color: var(--p-color-text-secondary);
+  font-size: 0.8125rem;
+}
+.palette-empty {
+  padding: 0.75rem;
+}
+
+/* ---------- phone: the sidebar becomes a drawer ---------- */
+.shell-mobilebar,
+.shell-backdrop {
+  display: none;
+}
+.shell-hamburger,
+.shell-hamburger::before,
+.shell-hamburger::after {
+  display: block;
+  width: 1.125rem;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  content: "";
+}
+.shell-hamburger {
+  position: relative;
+}
+.shell-hamburger::before {
+  position: absolute;
+  top: -5px;
+}
+.shell-hamburger::after {
+  position: absolute;
+  top: 5px;
+}
+.shell-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--shell-text);
+  cursor: pointer;
+}
+.shell-icon-button:hover {
+  background: var(--shell-hover);
+}
+
+@media (max-width: 899px) {
+  .shell-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    background: var(--shell-bg);
+    transform: translateX(-100%);
+    transition: transform 180ms ease;
+  }
+  .shell-sidebar[data-open="true"] {
+    transform: translateX(0);
+  }
+  .shell-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: block;
+    border: 0;
+    background: rgba(0, 0, 0, 0.55);
+  }
+  .shell-mobilebar {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.25rem 0.25rem 0.5rem;
+    color: var(--shell-text);
+  }
+  .shell-main {
+    padding: 0.5rem;
+  }
+}
+
+/* Pages open without a back arrow above the title — navigation is the sidebar. */
+.shell-panel .Polaris-Page-Header__BreadcrumbWrapper {
+  display: none;
+}
+
+/* ---------- collapsed: an icon-only rail (desktop; the phone drawer is always full width) ---------- */
+@media (min-width: 900px) {
+  .shell-sidebar {
+    transition: width 340ms var(--ease-out, ease);
+  }
+  html[data-sidebar="collapsed"] .shell {
+    --shell-sidebar-width: 4.25rem;
+  }
+  html[data-sidebar="collapsed"] :is(.shell-item-label, .shell-section-title, .shell-search-label, .shell-kbd, .shell-chevron, .shell-sub-wrap, .shell-store-text, .shell-store-more) {
+    display: none;
+  }
+  html[data-sidebar="collapsed"] .shell-top {
+    flex-direction: column;
+  }
+  html[data-sidebar="collapsed"] .shell-top .shell-search,
+  html[data-sidebar="collapsed"] .shell-item,
+  html[data-sidebar="collapsed"] .shell-store {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  html[data-sidebar="collapsed"] .shell-top .shell-search {
+    width: 2.125rem;
+    flex: none;
+  }
+  html[data-sidebar="collapsed"] .shell-section + .shell-section {
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--shell-line);
+  }
+  /* The three bottom controls become matching, centred icon buttons. */
+  html[data-sidebar="collapsed"] .shell-bottom .topbar-theme-button {
+    justify-content: center;
+    height: 2rem;
+    padding: 0;
+    border-color: transparent;
+    background: transparent;
+  }
+  html[data-sidebar="collapsed"] .shell-bottom .topbar-theme-button:hover {
+    background: var(--shell-hover);
+  }
+  html[data-sidebar="collapsed"] .shell-store {
+    height: 2.5rem;
+  }
+  html[data-sidebar="collapsed"] .shell-bottom .topbar-theme-button > span:not(.topbar-theme-icon) {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-sidebar {
+    transition: none;
+  }
+}

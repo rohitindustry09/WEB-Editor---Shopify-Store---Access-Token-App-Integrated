@@ -1,0 +1,377 @@
+/*
+ * HTML element system — a considered default for every plain HTML tag.
+ *
+ * Tailwind's reset strips headings, lists, tables, form controls and the rest down to nothing.
+ * This brings them back with the same "soft glass" language as the rest of the UI, for raw tags
+ * only: every selector ends in :not([class]), so anything Polaris or this app has already
+ * styled (they always carry a class) is left alone. It applies inside the content panel, the
+ * connect wizard and any element marked .html-content (a place that renders raw HTML).
+ *
+ * Low specificity on purpose (:where): a component can still override any of it.
+ */
+
+:where(.shell-panel, .wizard-root, .html-content) {
+  --el-radius: 0.75rem;
+  --el-line: var(--ui-glass-border, rgba(20, 20, 24, 0.1));
+  --el-surface: color-mix(in srgb, var(--p-color-bg-surface-secondary) 80%, transparent);
+  --el-mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+/* The last block in a container (a banner, a card, a modal body) never adds trailing space. */
+:where(.shell-panel, .wizard-root, .html-content) :is(p, ul, ol, menu, dl, pre, blockquote, table, figure, address, details, fieldset):not([class]):last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- headings ---------- */
+:where(.shell-panel, .wizard-root, .html-content) :is(h1, h2, h3, h4, h5, h6):not([class]) {
+  margin: 1.4em 0 0.5em;
+  color: var(--p-color-text);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+:where(.shell-panel, .wizard-root, .html-content) h1:not([class]) { font-size: 2rem; letter-spacing: -0.03em; }
+:where(.shell-panel, .wizard-root, .html-content) h2:not([class]) { font-size: 1.5rem; }
+:where(.shell-panel, .wizard-root, .html-content) h3:not([class]) { font-size: 1.25rem; }
+:where(.shell-panel, .wizard-root, .html-content) h4:not([class]) { font-size: 1.0625rem; }
+:where(.shell-panel, .wizard-root, .html-content) h5:not([class]) { font-size: 0.9375rem; }
+:where(.shell-panel, .wizard-root, .html-content) h6:not([class]) {
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--p-color-text-secondary);
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(h1, h2, h3, h4, h5, h6):not([class]):first-child { margin-top: 0; }
+
+/* ---------- text ---------- */
+:where(.shell-panel, .wizard-root, .html-content) p:not([class]) {
+  margin: 0 0 1em;
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(strong, b):not([class]) { font-weight: 650; }
+:where(.shell-panel, .wizard-root, .html-content) small:not([class]) { font-size: 0.8125em; color: var(--p-color-text-secondary); }
+:where(.shell-panel, .wizard-root, .html-content) mark:not([class]) {
+  padding: 0.05em 0.3em;
+  border-radius: 0.3em;
+  background: linear-gradient(180deg, transparent 40%, color-mix(in srgb, var(--ui-accent) 38%, transparent) 40%);
+  color: inherit;
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(del, s):not([class]) { color: var(--p-color-text-secondary); text-decoration-thickness: 1px; }
+:where(.shell-panel, .wizard-root, .html-content) ins:not([class]) {
+  text-decoration: underline dotted var(--ui-accent);
+  text-underline-offset: 0.2em;
+}
+:where(.shell-panel, .wizard-root, .html-content) abbr[title]:not([class]) {
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2em;
+  cursor: help;
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(sub, sup):not([class]) { font-size: 0.75em; line-height: 0; }
+:where(.shell-panel, .wizard-root, .html-content) :is(cite, address, dfn):not([class]) { font-style: italic; }
+:where(.shell-panel, .wizard-root, .html-content) address:not([class]) { margin: 0 0 1em; line-height: 1.6; }
+:where(.shell-panel, .wizard-root, .html-content) q:not([class]) { quotes: "\201C" "\201D" "\2018" "\2019"; }
+:where(.shell-panel, .wizard-root, .html-content) time:not([class]) { font-variant-numeric: tabular-nums; }
+
+/* ---------- links: in running text (and anywhere inside .html-content); a link that wraps a card or a title keeps its own look ---------- */
+:where(.html-content) a:not([class]),
+:where(.shell-panel, .wizard-root) :is(p, li, td, dd, blockquote, figcaption) a:not([class]) {
+  color: var(--p-color-text-link);
+  text-decoration: none;
+  background-image: linear-gradient(currentColor, currentColor);
+  background-position: 0 100%;
+  background-repeat: no-repeat;
+  background-size: 0% 1px;
+  transition: background-size var(--dur-med, 300ms) var(--ease-out, ease), color var(--dur-fast, 150ms) ease;
+}
+:where(.html-content) a:not([class]):is(:hover, :focus-visible),
+:where(.shell-panel, .wizard-root) :is(p, li, td, dd, blockquote, figcaption) a:not([class]):is(:hover, :focus-visible) {
+  color: var(--p-color-text-link-hover);
+  background-size: 100% 1px;
+}
+:where(.html-content) a:not([class]):focus-visible,
+:where(.shell-panel, .wizard-root) :is(p, li, td, dd, blockquote, figcaption) a:not([class]):focus-visible {
+  outline: 2px solid var(--p-color-border-focus);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
+/* ---------- code ---------- */
+:where(.shell-panel, .wizard-root, .html-content) :is(code, samp, var, kbd):not([class]) {
+  padding: 0.12em 0.4em;
+  border: 1px solid var(--el-line);
+  border-radius: 0.4rem;
+  background: var(--el-surface);
+  font-family: var(--el-mono);
+  font-size: 0.875em;
+}
+:where(.shell-panel, .wizard-root, .html-content) kbd:not([class]) {
+  border-bottom-width: 2px;
+  box-shadow: 0 1px 0 var(--el-line);
+  font-weight: 600;
+}
+:where(.shell-panel, .wizard-root, .html-content) pre:not([class]) {
+  margin: 0 0 1em;
+  padding: 1rem 1.125rem;
+  overflow-x: auto;
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-radius);
+  background: var(--el-surface);
+  font-family: var(--el-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  scrollbar-width: thin;
+}
+:where(.shell-panel, .wizard-root, .html-content) pre:not([class]) code:not([class]) {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+}
+
+/* ---------- quotes, rules ---------- */
+:where(.shell-panel, .wizard-root, .html-content) blockquote:not([class]) {
+  margin: 0 0 1em;
+  padding: 0.75rem 1.125rem;
+  border-left: 3px solid var(--ui-accent);
+  border-radius: 0 var(--el-radius) var(--el-radius) 0;
+  background: var(--el-surface);
+  color: var(--p-color-text-secondary);
+  font-style: italic;
+}
+:where(.shell-panel, .wizard-root, .html-content) blockquote:not([class]) :is(p:not([class]):last-child, footer) { margin-bottom: 0; }
+:where(.shell-panel, .wizard-root, .html-content) hr:not([class]) {
+  height: 1px;
+  margin: 1.75rem 0;
+  border: 0;
+  background: linear-gradient(90deg, transparent, var(--p-color-border), transparent);
+}
+
+/* ---------- lists ---------- */
+:where(.shell-panel, .wizard-root, .html-content) :is(ul, ol, menu):not([class]) {
+  margin: 0 0 1em;
+  padding-left: 1.4em;
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(ul, menu):not([class]) { list-style: disc; }
+:where(.shell-panel, .wizard-root, .html-content) ol:not([class]) { list-style: decimal; }
+:where(.shell-panel, .wizard-root, .html-content) li:not([class]) { margin: 0.3em 0; padding-left: 0.2em; line-height: 1.6; }
+:where(.shell-panel, .wizard-root, .html-content) li:not([class])::marker { color: var(--ui-accent); font-weight: 600; }
+:where(.shell-panel, .wizard-root, .html-content) :is(ul, ol):not([class]) :is(ul, ol):not([class]) { margin: 0.25em 0; }
+:where(.shell-panel, .wizard-root, .html-content) dl:not([class]) { margin: 0 0 1em; }
+:where(.shell-panel, .wizard-root, .html-content) dt:not([class]) { margin-top: 0.75em; font-weight: 650; }
+:where(.shell-panel, .wizard-root, .html-content) dd:not([class]) { margin: 0.15em 0 0 1.25em; color: var(--p-color-text-secondary); }
+
+/* ---------- tables ---------- */
+:where(.shell-panel, .wizard-root, .html-content) table:not([class]) {
+  width: 100%;
+  margin: 0 0 1em;
+  border: 1px solid var(--el-line);
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: var(--el-radius);
+  overflow: hidden;
+  font-size: 0.875rem;
+}
+:where(.shell-panel, .wizard-root, .html-content) caption:not([class]) {
+  padding: 0.5rem 0;
+  caption-side: bottom;
+  color: var(--p-color-text-secondary);
+  font-size: 0.8125rem;
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(th, td):not([class]) {
+  padding: 0.625rem 0.875rem;
+  border-bottom: 1px solid var(--el-line);
+  text-align: left;
+  vertical-align: top;
+}
+:where(.shell-panel, .wizard-root, .html-content) th:not([class]) {
+  background: var(--el-surface);
+  color: var(--p-color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+:where(.shell-panel, .wizard-root, .html-content) tbody tr:not([class]):last-child :is(td, th):not([class]) { border-bottom: 0; }
+:where(.shell-panel, .wizard-root, .html-content) tbody tr:not([class]) { transition: background-color var(--dur-fast, 150ms) ease; }
+:where(.shell-panel, .wizard-root, .html-content) tbody tr:not([class]):hover { background: color-mix(in srgb, var(--ui-accent) 6%, transparent); }
+
+/* ---------- media ---------- */
+:where(.shell-panel, .wizard-root, .html-content) :is(img, video, canvas):not([class]) {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--el-radius);
+}
+:where(.shell-panel, .wizard-root, .html-content) figure:not([class]) { margin: 0 0 1em; }
+:where(.shell-panel, .wizard-root, .html-content) figcaption:not([class]) {
+  margin-top: 0.5rem;
+  color: var(--p-color-text-secondary);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+:where(.shell-panel, .wizard-root, .html-content) audio:not([class]) { width: 100%; border-radius: 999px; }
+:where(.shell-panel, .wizard-root, .html-content) iframe:not([class]) {
+  max-width: 100%;
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-radius);
+}
+
+/* ---------- disclosure ---------- */
+:where(.shell-panel, .wizard-root, .html-content) details:not([class]) {
+  margin: 0 0 0.75em;
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-radius);
+  background: var(--el-surface);
+  transition: box-shadow var(--dur-med, 300ms) var(--ease-out, ease);
+}
+:where(.shell-panel, .wizard-root, .html-content) details:not([class])[open] { box-shadow: var(--ui-shadow-sm); }
+:where(.shell-panel, .wizard-root, .html-content) summary:not([class]) {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+:where(.shell-panel, .wizard-root, .html-content) summary:not([class])::-webkit-details-marker { display: none; }
+:where(.shell-panel, .wizard-root, .html-content) summary:not([class])::before {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--dur-med, 300ms) var(--ease-out, ease);
+  content: "";
+}
+:where(.shell-panel, .wizard-root, .html-content) details:not([class])[open] > summary:not([class])::before { transform: rotate(45deg); }
+:where(.shell-panel, .wizard-root, .html-content) details:not([class]) > :not(summary) { margin-inline: 1rem; }
+:where(.shell-panel, .wizard-root, .html-content) details:not([class]) > :last-child { margin-bottom: 1rem; }
+:where(.shell-panel, .wizard-root, .html-content) dialog:not([class]) {
+  padding: 1.5rem;
+  border: 1px solid var(--el-line);
+  border-radius: 1.25rem;
+  background: var(--ui-glass-strong);
+  color: var(--p-color-text);
+  box-shadow: var(--ui-shadow-md);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+:where(.shell-panel, .wizard-root, .html-content) dialog:not([class])::backdrop {
+  background: rgba(10, 10, 14, 0.45);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+/* ---------- progress and meter ---------- */
+:where(.shell-panel, .wizard-root, .html-content) :is(progress, meter):not([class]) {
+  width: 100%;
+  height: 0.5rem;
+  border: 0;
+  border-radius: 999px;
+  accent-color: var(--ui-accent);
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--p-color-bg-fill-secondary);
+  overflow: hidden;
+}
+:where(.shell-panel, .wizard-root, .html-content) progress:not([class])::-webkit-progress-bar { background: var(--p-color-bg-fill-secondary); }
+:where(.shell-panel, .wizard-root, .html-content) progress:not([class])::-webkit-progress-value {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #e9c46a, var(--ui-accent));
+  transition: width var(--dur-slow, 700ms) var(--ease-out, ease);
+}
+:where(.shell-panel, .wizard-root, .html-content) progress:not([class])::-moz-progress-bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #e9c46a, var(--ui-accent));
+}
+:where(.shell-panel, .wizard-root, .html-content) meter:not([class])::-webkit-meter-bar { background: var(--p-color-bg-fill-secondary); border: 0; border-radius: 999px; height: 0.5rem; }
+:where(.shell-panel, .wizard-root, .html-content) meter:not([class])::-webkit-meter-optimum-value { background: #22c55e; border-radius: 999px; }
+:where(.shell-panel, .wizard-root, .html-content) meter:not([class])::-webkit-meter-suboptimum-value { background: #f59e0b; border-radius: 999px; }
+:where(.shell-panel, .wizard-root, .html-content) meter:not([class])::-webkit-meter-even-less-good-value { background: #ef4444; border-radius: 999px; }
+
+/* ---------- raw form controls (the ones that are not Polaris fields) ---------- */
+:where(.shell-panel, .wizard-root, .html-content) label:not([class]) { font-weight: 550; }
+:where(.shell-panel, .wizard-root, .html-content) fieldset:not([class]) {
+  margin: 0 0 1em;
+  padding: 0.75rem 1rem 1rem;
+  border: 1px solid var(--el-line);
+  border-radius: var(--el-radius);
+}
+:where(.shell-panel, .wizard-root, .html-content) legend:not([class]) { padding: 0 0.4rem; font-size: 0.8125rem; font-weight: 650; color: var(--p-color-text-secondary); }
+
+:where(.shell-panel, .wizard-root, .html-content) :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="image"], [type="hidden"]), textarea, select):not([class]) {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--p-color-input-border);
+  border-radius: 0.75rem;
+  background: var(--p-color-input-bg-surface);
+  color: var(--p-color-text);
+  font: inherit;
+  transition: box-shadow var(--dur-med, 300ms) var(--ease-out, ease), border-color var(--dur-fast, 150ms) ease;
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(input, textarea, select):not([class])::placeholder { color: var(--p-color-text-secondary); opacity: 0.8; }
+:where(.shell-panel, .wizard-root, .html-content) :is(input, textarea, select):not([class]):hover { border-color: var(--p-color-input-border-hover); }
+:where(.shell-panel, .wizard-root, .html-content) :is(input, textarea, select):not([class]):focus-visible {
+  border-color: var(--ui-accent);
+  outline: none;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ui-accent) 20%, transparent);
+}
+:where(.shell-panel, .wizard-root, .html-content) textarea:not([class]) { min-height: 6rem; line-height: 1.5; resize: vertical; }
+:where(.shell-panel, .wizard-root, .html-content) :is(input[type="checkbox"], input[type="radio"], input[type="range"]):not([class]) {
+  accent-color: var(--ui-accent);
+}
+:where(.shell-panel, .wizard-root, .html-content) input[type="range"]:not([class]) { width: 100%; }
+:where(.shell-panel, .wizard-root, .html-content) input[type="color"]:not([class]) {
+  width: 2.75rem;
+  height: 2.25rem;
+  padding: 0.125rem;
+  border: 1px solid var(--p-color-input-border);
+  border-radius: 0.625rem;
+  background: var(--p-color-input-bg-surface);
+  cursor: pointer;
+}
+:where(.shell-panel, .wizard-root, .html-content) input[type="file"]:not([class])::file-selector-button {
+  margin-right: 0.75rem;
+  padding: 0.4rem 0.875rem;
+  border: 1px solid var(--p-color-border);
+  border-radius: 0.625rem;
+  background: var(--p-color-bg-surface);
+  color: var(--p-color-text);
+  font: inherit;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background-color var(--dur-fast, 150ms) ease, box-shadow var(--dur-med, 300ms) var(--ease-out, ease);
+}
+:where(.shell-panel, .wizard-root, .html-content) input[type="file"]:not([class])::file-selector-button:hover {
+  background: var(--p-color-bg-surface-hover);
+  box-shadow: var(--ui-shadow-sm);
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(button, input[type="button"], input[type="submit"], input[type="reset"]):not([class]) {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--p-color-border);
+  border-radius: 0.75rem;
+  background: var(--p-color-bg-surface);
+  color: var(--p-color-text);
+  font: inherit;
+  font-weight: 550;
+  cursor: pointer;
+  transition: transform var(--dur-fast, 150ms) var(--ease-out, ease), box-shadow var(--dur-med, 300ms) var(--ease-out, ease), background-color var(--dur-fast, 150ms) ease;
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(button, input[type="button"], input[type="submit"], input[type="reset"]):not([class]):hover:not(:disabled) {
+  background: var(--p-color-bg-surface-hover);
+  box-shadow: var(--ui-shadow-sm);
+}
+:where(.shell-panel, .wizard-root, .html-content) :is(button, input[type="button"], input[type="submit"], input[type="reset"]):not([class]):active:not(:disabled) { transform: scale(0.97); }
+:where(.shell-panel, .wizard-root, .html-content) :is(button, input, textarea, select):not([class]):focus-visible { outline: 2px solid var(--p-color-border-focus); outline-offset: 2px; }
+:where(.shell-panel, .wizard-root, .html-content) :is(button, input, textarea, select):not([class]):disabled { cursor: not-allowed; opacity: 0.55; }
+:where(.shell-panel, .wizard-root, .html-content) [hidden] { display: none !important; }
+
+/* ---------- reduced motion: transitions become instant ---------- */
+@media (prefers-reduced-motion: reduce) {
+  :where(.shell-panel, .wizard-root, .html-content) :where(a, button, input, textarea, select, details, summary, tr, progress):not([class]),
+  :where(.shell-panel, .wizard-root, .html-content) summary:not([class])::before {
+    transition-duration: 0.01ms !important;
+  }
+}

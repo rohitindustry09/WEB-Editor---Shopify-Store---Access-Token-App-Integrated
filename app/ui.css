@@ -1,0 +1,510 @@
+/*
+ * Design system layer — "soft glass bento".
+ *
+ * Direction: calm, spacious and layered, in the spirit of modern SaaS tools. Surfaces are
+ * translucent glass over a slow aurora of brass and violet light; cards are rounded and
+ * lift softly; everything that appears eases in; interactions respond (press, glow, focus).
+ *
+ * Rules this file follows
+ *  - Motion uses transform / opacity only (compositor-friendly) and is switched off for
+ *    visitors who ask for reduced motion (see the bottom of the file).
+ *  - Blur is spent sparingly: on the content panel, popovers, modals and floating bars —
+ *    never on every card or table row.
+ *  - Colour stays token-driven (Polaris --p-color-* plus the --ui-* tokens below), so light
+ *    and dark both work and contrast is kept.
+ *  - Polaris restyling is scoped to the content panel, so the login / connect pages are untouched.
+ */
+
+:root {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 150ms;
+  --dur-med: 320ms;
+  --dur-slow: 700ms;
+
+  --ui-accent: #b8862b;
+  --ui-accent-2: #7c3aed;
+  --ui-glass: rgba(255, 255, 255, 0.74);
+  --ui-glass-strong: rgba(255, 255, 255, 0.9);
+  --ui-glass-border: rgba(20, 20, 24, 0.07);
+  --ui-shadow-sm: 0 1px 2px rgba(18, 18, 24, 0.05), 0 2px 8px -2px rgba(18, 18, 24, 0.06);
+  --ui-shadow-md: 0 1px 2px rgba(18, 18, 24, 0.05), 0 12px 28px -10px rgba(18, 18, 24, 0.16);
+  --ui-aurora-1: rgba(214, 178, 90, 0.26);
+  --ui-aurora-2: rgba(124, 58, 237, 0.14);
+  --ui-aurora-3: rgba(56, 189, 248, 0.13);
+  --ui-radius-card: 1.125rem;
+}
+
+.p-theme-dark-experimental {
+  --ui-glass: rgba(34, 34, 40, 0.66);
+  --ui-glass-strong: rgba(40, 40, 48, 0.9);
+  --ui-glass-border: rgba(255, 255, 255, 0.08);
+  --ui-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 2px 8px -2px rgba(0, 0, 0, 0.35);
+  --ui-shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 34px -12px rgba(0, 0, 0, 0.6);
+  --ui-aurora-1: rgba(214, 178, 90, 0.16);
+  --ui-aurora-2: rgba(124, 58, 237, 0.2);
+  --ui-aurora-3: rgba(56, 189, 248, 0.1);
+}
+
+/* ---------- keyframes ---------- */
+@keyframes ui-rise {
+  from { opacity: 0; transform: translate3d(0, 14px, 0); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ui-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ui-pop {
+  0% { transform: scale(0.92); opacity: 0; }
+  60% { transform: scale(1.03); opacity: 1; }
+  100% { transform: scale(1); }
+}
+@keyframes ui-shimmer {
+  from { transform: translate3d(-100%, 0, 0); }
+  to { transform: translate3d(100%, 0, 0); }
+}
+@keyframes ui-drift-a {
+  from { transform: translate3d(-6%, -4%, 0) scale(1); }
+  to { transform: translate3d(8%, 6%, 0) scale(1.12); }
+}
+@keyframes ui-drift-b {
+  from { transform: translate3d(6%, 4%, 0) scale(1.08); }
+  to { transform: translate3d(-8%, -6%, 0) scale(0.96); }
+}
+@keyframes ui-pulse-soft {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.14); opacity: 0.75; }
+}
+@keyframes ui-float {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, -3px, 0); }
+}
+@keyframes ui-wiggle {
+  0%, 100% { transform: rotate(0); }
+  25% { transform: rotate(-12deg); }
+  60% { transform: rotate(9deg); }
+}
+@keyframes ui-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes ui-nudge {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(3px, 0, 0); }
+}
+@keyframes ui-gradient-pan {
+  from { background-position: 0% 50%; }
+  to { background-position: 100% 50%; }
+}
+
+/* ---------- animated icons (see components/motion/AnimatedIcon.tsx) ---------- */
+.anim-icon {
+  display: inline-flex;
+  width: var(--icon-size, 20px);
+  height: var(--icon-size, 20px);
+  flex: none;
+  transform-origin: 50% 50%;
+}
+.anim-icon .Polaris-Icon {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .anim-icon[data-trigger="always"][data-motion="pulse"] { animation: ui-pulse-soft 2.2s ease-in-out var(--icon-delay, 0ms) infinite; }
+  .anim-icon[data-trigger="always"][data-motion="float"] { animation: ui-float 3s ease-in-out var(--icon-delay, 0ms) infinite; }
+  .anim-icon[data-trigger="always"][data-motion="spin"] { animation: ui-spin 1.4s linear infinite; }
+  .anim-icon[data-trigger="mount"] { animation: ui-pop 520ms var(--ease-spring) var(--icon-delay, 0ms) both; }
+
+  /* Hover: the icon itself, or any card / row / button that holds it. */
+  .anim-icon[data-trigger="hover"]:hover[data-motion="pop"],
+  .has-icon-motion:hover .anim-icon[data-trigger="hover"][data-motion="pop"],
+  .has-icon-motion:focus-visible .anim-icon[data-trigger="hover"][data-motion="pop"] { animation: ui-pop 420ms var(--ease-spring); }
+  .anim-icon[data-trigger="hover"]:hover[data-motion="wiggle"],
+  .has-icon-motion:hover .anim-icon[data-trigger="hover"][data-motion="wiggle"],
+  .has-icon-motion:focus-visible .anim-icon[data-trigger="hover"][data-motion="wiggle"] { animation: ui-wiggle 520ms ease-in-out; }
+  .anim-icon[data-trigger="hover"]:hover[data-motion="spin"],
+  .has-icon-motion:hover .anim-icon[data-trigger="hover"][data-motion="spin"],
+  .has-icon-motion:focus-visible .anim-icon[data-trigger="hover"][data-motion="spin"] { animation: ui-spin 700ms var(--ease-out); }
+  .anim-icon[data-trigger="hover"]:hover[data-motion="nudge"],
+  .has-icon-motion:hover .anim-icon[data-trigger="hover"][data-motion="nudge"],
+  .has-icon-motion:focus-visible .anim-icon[data-trigger="hover"][data-motion="nudge"] { animation: ui-nudge 520ms ease-in-out infinite; }
+}
+
+/* ---------- the aurora behind the content panel ---------- */
+.shell-aurora {
+  position: absolute;
+  inset: 0.5rem 0.5rem 0.5rem 0;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: 1rem;
+  pointer-events: none;
+}
+.shell-aurora span {
+  position: absolute;
+  width: 60%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  will-change: transform;
+}
+.shell-aurora span:nth-child(1) {
+  top: -22%;
+  left: -8%;
+  background: radial-gradient(closest-side, var(--ui-aurora-1), transparent);
+}
+.shell-aurora span:nth-child(2) {
+  top: 8%;
+  right: -16%;
+  background: radial-gradient(closest-side, var(--ui-aurora-2), transparent);
+}
+.shell-aurora span:nth-child(3) {
+  bottom: -30%;
+  left: 24%;
+  background: radial-gradient(closest-side, var(--ui-aurora-3), transparent);
+}
+/* The aurora blobs drift on randomised GSAP loops (see ShellMotion.tsx). */
+
+/* The panel is glass over the aurora: a translucent version of the page colour with one soft blur. */
+.shell-main {
+  position: relative;
+}
+.shell-panel {
+  position: relative;
+  z-index: 1;
+  background: color-mix(in srgb, var(--p-color-bg) 84%, transparent);
+  /* No backdrop blur here: the aurora behind is already soft, and re-blurring a viewport-sized area while it drifts costs a frame budget on every page. */
+  box-shadow: inset 0 0 0 1px var(--ui-glass-border);
+  scroll-behavior: smooth;
+}
+
+/* ---------- page entrance ----------
+ * GSAP animates the page in (PageMotion.tsx). Until it takes over, a page's blocks are held back,
+ * with a failsafe that shows them after 1.5 s so a script problem can never leave a blank page. */
+@keyframes ui-failsafe {
+  to { opacity: 1; visibility: visible; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .page-transition:not([data-motion-ready]) :is(.Polaris-Page-Header__TitleWrapper, .Polaris-Layout__Section, .Polaris-Page__Content > *, .reveal) {
+    opacity: 0;
+    animation: ui-failsafe 0.01s 1.5s forwards;
+  }
+}
+
+/* ---------- cards: rounded glass with a soft lift ---------- */
+.shell-panel .Polaris-ShadowBevel {
+  --pc-shadow-bevel-border-radius: var(--ui-radius-card) !important;
+  border-radius: var(--ui-radius-card);
+  box-shadow: var(--ui-shadow-sm), 0 0 0 1px var(--ui-glass-border);
+  transition: box-shadow var(--dur-med) var(--ease-out), transform var(--dur-med) var(--ease-out);
+}
+.shell-panel .Polaris-ShadowBevel::before {
+  display: none;
+}
+.shell-panel .Polaris-ShadowBevel > .Polaris-Box {
+  --pc-box-background: var(--ui-glass) !important;
+}
+.shell-panel .Polaris-ShadowBevel:hover {
+  box-shadow: var(--ui-shadow-md), 0 0 0 1px var(--ui-glass-border);
+}
+
+/* ---------- buttons: press, glow, gradient primary ---------- */
+.shell-panel .Polaris-Button {
+  transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-med) var(--ease-out), background-color var(--dur-fast) ease, filter var(--dur-fast) ease;
+}
+.shell-panel .Polaris-Button:active:not([disabled]) {
+  transform: scale(0.97);
+}
+.shell-panel .Polaris-Button--variantPrimary:not([disabled]) {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 55%);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 6px 16px -6px rgba(0, 0, 0, 0.45);
+}
+.shell-panel .Polaris-Button--variantPrimary:not([disabled]):hover {
+  filter: brightness(1.12);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 10px 22px -6px rgba(184, 134, 43, 0.5);
+}
+
+/* ---------- inputs, tabs, rows, banners ---------- */
+.shell-panel .Polaris-TextField__Backdrop,
+.shell-panel .Polaris-Select__Backdrop {
+  transition: box-shadow var(--dur-med) var(--ease-out), border-color var(--dur-fast) ease;
+}
+.shell-panel .Polaris-IndexTable__TableRow,
+.shell-panel .Polaris-DataTable__TableRow {
+  transition: background-color var(--dur-fast) ease;
+}
+.shell-panel .Polaris-Banner {
+  border-radius: 0.875rem;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .shell-panel .Polaris-Banner {
+    animation: ui-rise 420ms var(--ease-out) both;
+  }
+}
+
+/* ---------- progress: a soft sheen sweeps the bar ---------- */
+.shell-panel .Polaris-ProgressBar {
+  border-radius: 999px;
+}
+.shell-panel .Polaris-ProgressBar__Indicator {
+  position: relative;
+  overflow: hidden;
+  border-radius: 999px;
+  transition: width 600ms var(--ease-out);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .shell-panel .Polaris-ProgressBar__Indicator::after {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+    animation: ui-shimmer 1.8s linear infinite;
+    content: "";
+  }
+}
+
+/* ---------- glass overlays: modals, popovers ---------- */
+.Polaris-Backdrop {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.Polaris-Popover__Content {
+  border-radius: 0.875rem;
+  background: var(--ui-glass-strong);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+.Polaris-Modal-Dialog__Modal {
+  border-radius: 1.25rem;
+}
+
+/* ---------- bento tiles (Home and any launcher grid) ---------- */
+.bento {
+  display: grid;
+  gap: 0.875rem;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+.bento-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 1.125rem;
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-glass);
+  box-shadow: var(--ui-shadow-sm), 0 0 0 1px var(--ui-glass-border);
+  color: inherit;
+  text-decoration: none;
+  overflow: hidden;
+  transition: transform var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out);
+}
+a.bento-tile:hover,
+a.bento-tile:focus-visible {
+  box-shadow: var(--ui-shadow-md), 0 0 0 1px var(--ui-glass-border);
+}
+a.bento-tile:focus-visible {
+  outline: 2px solid var(--p-color-border-focus);
+  outline-offset: 2px;
+}
+/* A light that follows the pointer is overkill; a static corner glow gives the same depth for free. */
+.bento-tile::after {
+  position: absolute;
+  top: var(--my, 0%);
+  left: var(--mx, 100%);
+  width: 80%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(closest-side, var(--tile-glow, transparent), transparent);
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease-out);
+  pointer-events: none;
+  content: "";
+}
+a.bento-tile:hover::after,
+a.bento-tile:focus-visible::after {
+  opacity: 1;
+}
+.bento-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.75rem;
+  background: var(--tile-tint, rgba(184, 134, 43, 0.14));
+  color: var(--tile-ink, #8a6414);
+}
+.p-theme-dark-experimental .bento-icon {
+  color: var(--tile-ink-dark, #e9c46a);
+}
+.bento-title {
+  font-size: 0.9375rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.bento-text {
+  color: var(--p-color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+.bento-go {
+  position: absolute;
+  right: 0.875rem;
+  bottom: 0.875rem;
+  display: inline-flex;
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--p-color-text-secondary);
+  opacity: 0;
+  transform: translate3d(-4px, 0, 0);
+  transition: opacity var(--dur-med) var(--ease-out), transform var(--dur-med) var(--ease-out);
+}
+a.bento-tile:hover .bento-go,
+a.bento-tile:focus-visible .bento-go {
+  opacity: 1;
+  transform: none;
+}
+.bento-hero {
+  background:
+    radial-gradient(60% 120% at 0% 0%, var(--ui-aurora-1), transparent 60%),
+    radial-gradient(60% 120% at 100% 100%, var(--ui-aurora-2), transparent 60%),
+    var(--ui-glass);
+}
+.bento-title-gradient {
+  background: linear-gradient(100deg, var(--p-color-text) 0%, var(--ui-accent) 45%, var(--ui-accent-2) 80%, var(--p-color-text) 100%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bento-title-gradient {
+    animation: ui-gradient-pan 9s ease-in-out infinite alternate;
+  }
+  /* Each word of an AnimatedWords headline sits in its own mask so it can rise out of it. */
+  .word {
+    display: inline-block;
+    overflow: hidden;
+    vertical-align: top;
+    padding-bottom: 0.12em;
+    margin-bottom: -0.12em;
+  }
+  .word-inner {
+    display: inline-block;
+    will-change: transform;
+  }
+}
+.bento-span-12 { grid-column: span 12; }
+.bento-span-8 { grid-column: span 8; }
+.bento-span-6 { grid-column: span 6; }
+.bento-span-4 { grid-column: span 4; }
+.bento-span-3 { grid-column: span 3; }
+@media (max-width: 1100px) {
+  .bento-span-8, .bento-span-6, .bento-span-4 { grid-column: span 6; }
+  .bento-span-3 { grid-column: span 6; }
+}
+@media (max-width: 640px) {
+  .bento-span-12, .bento-span-8, .bento-span-6, .bento-span-4, .bento-span-3 { grid-column: span 12; }
+}
+
+/* Live stat tile: a number, a label and a quiet "live" dot. */
+.bento-number {
+  font-size: 1.875rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.live-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .live-dot {
+    animation: ui-ping 2s ease-out infinite;
+  }
+}
+@keyframes ui-ping {
+  0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); }
+  80%, 100% { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+}
+
+/* Scroll-position line along the top of the panel (driven by ShellMotion.tsx). */
+.shell-progress {
+  position: absolute;
+  top: 0.5rem;
+  left: 0;
+  right: 0.5rem;
+  z-index: 3;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #e9c46a, var(--ui-accent), var(--ui-accent-2));
+  transform: scaleX(0);
+  transform-origin: left;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------- skeleton shimmer for anything loading ---------- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0.5rem;
+  background: var(--p-color-bg-fill-secondary);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton::after {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+    animation: ui-shimmer 1.4s linear infinite;
+    content: "";
+  }
+}
+
+/* ---------- selection and focus polish ---------- */
+::selection {
+  background: color-mix(in srgb, var(--ui-accent) 32%, transparent);
+}
+
+/* ---------- reduced motion: everything above becomes instant and still ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .shell-panel,
+  .shell-panel *,
+  .bento-tile,
+  .bento-tile * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* ---------- clickable stat tiles (filters): lift on hover, press on click ---------- */
+.stat-tile {
+  transition: transform var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out);
+}
+.stat-tile:hover {
+  transform: translate3d(0, -2px, 0);
+  box-shadow: var(--ui-shadow-md);
+}
+.stat-tile:active {
+  transform: scale(0.985);
+}
+.stat-tile:focus-visible {
+  outline: 2px solid var(--p-color-border-focus);
+  outline-offset: 2px;
+}
+
+
+/* Gradient headline + word-by-word animation: text inside a transformed child is not painted by its parent's
+ * background-clip, so each animated word paints the gradient itself (otherwise it would be invisible). */
+.bento-title-gradient .word-inner {
+  background: linear-gradient(100deg, var(--ui-accent) 0%, var(--ui-accent-2) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}

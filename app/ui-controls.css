@@ -1,0 +1,236 @@
+/*
+ * Form controls, links and small elements — the same "soft glass" language as ui.css,
+ * applied to what people actually touch: text fields, text areas, selects, radios,
+ * drop zones, tabs, lists, tags, links, tooltips and empty states.
+ *
+ * Everything animates transform / opacity / box-shadow only, scoped to the content
+ * panel (.shell-panel) and the connect wizard, and quietens for reduced motion.
+ */
+
+/* ---------- text fields, text areas, selects ---------- */
+.shell-panel .Polaris-TextField__Backdrop,
+.shell-panel .Polaris-Select__Backdrop,
+.wizard-root .Polaris-TextField__Backdrop {
+  border-radius: 0.75rem;
+  transition: box-shadow var(--dur-med) var(--ease-out), border-color var(--dur-fast) ease, background-color var(--dur-fast) ease;
+}
+.shell-panel .Polaris-TextField:hover:not(.Polaris-TextField--disabled) .Polaris-TextField__Backdrop,
+.shell-panel .Polaris-Select:hover .Polaris-Select__Backdrop {
+  border-color: var(--p-color-input-border-hover);
+}
+/* Focus: a soft brass halo around the whole field, not only a hairline. */
+.shell-panel .Polaris-TextField:focus-within .Polaris-TextField__Backdrop,
+.wizard-root .Polaris-TextField:focus-within .Polaris-TextField__Backdrop,
+.shell-panel .Polaris-Select:focus-within .Polaris-Select__Backdrop {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ui-accent) 20%, transparent);
+}
+.shell-panel .Polaris-TextField__Input,
+.shell-panel textarea.Polaris-TextField__Input {
+  transition: color var(--dur-fast) ease;
+}
+/* Text areas: a calmer resize handle and a little more breathing room. */
+.shell-panel textarea.Polaris-TextField__Input {
+  line-height: 1.5;
+  resize: vertical;
+}
+/* The label eases to the accent colour while its field is being edited. */
+.shell-panel .Polaris-Labelled__LabelWrapper label,
+.shell-panel .Polaris-Label__Text {
+  transition: color var(--dur-fast) ease;
+}
+.shell-panel .Polaris-Labelled:focus-within > .Polaris-Labelled__LabelWrapper .Polaris-Label__Text {
+  color: var(--ui-accent);
+}
+.shell-panel .Polaris-TextField__Prefix,
+.shell-panel .Polaris-TextField__Suffix {
+  transition: color var(--dur-fast) ease;
+}
+.shell-panel .Polaris-TextField:focus-within .Polaris-TextField__Prefix {
+  color: var(--ui-accent);
+}
+/* The clear (x) button fades and turns on hover. */
+.shell-panel .Polaris-TextField__ClearButton {
+  transition: transform var(--dur-med) var(--ease-spring), opacity var(--dur-fast) ease;
+}
+.shell-panel .Polaris-TextField__ClearButton:hover {
+  transform: rotate(90deg);
+}
+
+/* Radios and checkboxes are drawn as on / off switches in ui-choices.css. */
+
+/* ---------- drop zones: they wake up as a file approaches ---------- */
+.shell-panel .Polaris-DropZone {
+  border-radius: 1rem;
+  transition: box-shadow var(--dur-med) var(--ease-out), background-color var(--dur-med) ease, transform var(--dur-med) var(--ease-out);
+}
+.shell-panel .Polaris-DropZone--hasOutline {
+  background-color: color-mix(in srgb, var(--ui-accent) 4%, transparent);
+}
+.shell-panel .Polaris-DropZone:hover:not(.Polaris-DropZone--isDisabled) {
+  background-color: color-mix(in srgb, var(--ui-accent) 9%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ui-accent) 14%, transparent);
+}
+.shell-panel .Polaris-DropZone--isDragging {
+  background-color: color-mix(in srgb, var(--ui-accent) 14%, transparent);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--ui-accent) 24%, transparent);
+  transform: scale(1.005);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .shell-panel .Polaris-DropZone-FileUpload__Action,
+  .shell-panel .Polaris-DropZone .Polaris-DropZone__Container svg {
+    transition: transform var(--dur-med) var(--ease-spring);
+  }
+  .shell-panel .Polaris-DropZone:hover .Polaris-DropZone__Container svg {
+    transform: translate3d(0, -2px, 0);
+  }
+}
+
+/* ---------- tabs: a brass underline slides in under the open tab ---------- */
+.shell-panel .Polaris-Tabs__Tab {
+  position: relative;
+  transition: color var(--dur-fast) ease, background-color var(--dur-fast) ease;
+}
+.shell-panel .Polaris-Tabs__Tab::after {
+  position: absolute;
+  left: 0.5rem;
+  right: 0.5rem;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #e9c46a, var(--ui-accent));
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform var(--dur-med) var(--ease-out);
+  content: "";
+}
+.shell-panel .Polaris-Tabs__Tab--active::after,
+.shell-panel .Polaris-Tabs__Tab[aria-selected="true"]::after {
+  transform: scaleX(1);
+}
+.shell-panel .Polaris-Tabs__Tab:hover::after {
+  transform: scaleX(0.6);
+}
+.shell-panel .Polaris-Tabs__Tab--active:hover::after,
+.shell-panel .Polaris-Tabs__Tab[aria-selected="true"]:hover::after {
+  transform: scaleX(1);
+}
+
+/* ---------- lists: options, menu items, autocomplete rows ---------- */
+.shell-panel .Polaris-ActionList__Item,
+.Polaris-Popover .Polaris-ActionList__Item,
+.Polaris-Popover .Polaris-OptionList-Option__SingleSelectOption,
+.Polaris-Popover .Polaris-Listbox-Option {
+  border-radius: 0.5rem;
+  transition: background-color var(--dur-fast) ease, transform var(--dur-fast) var(--ease-out);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .Polaris-Popover .Polaris-ActionList__Item:hover,
+  .Polaris-Popover .Polaris-OptionList-Option__SingleSelectOption:hover {
+    transform: translate3d(2px, 0, 0);
+  }
+  /* Menus and option lists fan open instead of appearing. */
+  .Polaris-Popover__Pane {
+    animation: ui-rise 220ms var(--ease-out) both;
+  }
+}
+
+/* ---------- tags and badges ---------- */
+.shell-panel .Polaris-Tag,
+.shell-panel .Polaris-Badge {
+  transition: background-color var(--dur-fast) ease, transform var(--dur-fast) var(--ease-out);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .shell-panel .Polaris-Tag {
+    animation: ui-pop 320ms var(--ease-spring) both;
+  }
+  .shell-panel .Polaris-Tag:hover {
+    transform: translate3d(0, -1px, 0);
+  }
+}
+
+/* ---------- links: the underline grows in ---------- */
+.shell-panel a.Polaris-Link,
+.shell-panel .Polaris-Link {
+  text-decoration: none;
+  background-image: linear-gradient(currentColor, currentColor);
+  background-position: 0 100%;
+  background-repeat: no-repeat;
+  background-size: 0% 1px;
+  transition: background-size var(--dur-med) var(--ease-out), color var(--dur-fast) ease;
+}
+.shell-panel a.Polaris-Link:hover,
+.shell-panel a.Polaris-Link:focus-visible,
+.shell-panel .Polaris-Link:hover {
+  background-size: 100% 1px;
+}
+
+/* ---------- thumbnails and images in rows: a gentle zoom on hover ---------- */
+.shell-panel .Polaris-Thumbnail {
+  overflow: hidden;
+  transition: transform var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out);
+}
+.shell-panel .Polaris-IndexTable__TableRow:hover .Polaris-Thumbnail,
+.shell-panel .Polaris-Box:hover > .Polaris-InlineStack .Polaris-Thumbnail {
+  transform: scale(1.04);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+/* ---------- empty states and tooltips ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  .shell-panel .Polaris-EmptyState__Image {
+    animation: ui-float 4s ease-in-out infinite;
+  }
+}
+.Polaris-Tooltip-TooltipOverlay__Content {
+  border-radius: 0.625rem;
+  background: var(--ui-glass-strong);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  backdrop-filter: blur(14px) saturate(150%);
+}
+
+/* ---------- pagination ---------- */
+.shell-panel .Polaris-Pagination .Polaris-Button:not([disabled]):hover {
+  box-shadow: var(--ui-shadow-sm);
+}
+
+/* ---------- quieter scrollbars ---------- */
+.shell-panel {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--p-color-text) 22%, transparent) transparent;
+}
+
+/* ---------- the connect wizard (it sits outside the app shell) ---------- */
+.wizard-root {
+  --wz-green: #008060;
+  --wz-green-ink: #004c3f;
+  --wz-tint: #eaf6ef;
+  --wz-bg:
+    radial-gradient(1100px 520px at 88% -6%, var(--ui-aurora-1), transparent 60%),
+    radial-gradient(900px 460px at 6% 108%, var(--ui-aurora-3), transparent 55%),
+    var(--p-color-bg);
+}
+.p-theme-dark-experimental .wizard-root {
+  --wz-green: #10b981;
+  --wz-green-ink: #6ee7b7;
+  --wz-tint: rgba(16, 185, 129, 0.16);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .wizard-card {
+    animation: ui-rise 640ms var(--ease-out) both;
+  }
+  .wizard-card:nth-child(2) {
+    animation-delay: 90ms;
+  }
+  .auth-card {
+    animation: ui-rise 640ms var(--ease-out) both;
+  }
+  .auth-brand {
+    animation: ui-fade 800ms var(--ease-out) both;
+  }
+  .auth-point {
+    animation: ui-rise 560ms var(--ease-out) both;
+  }
+  .auth-point:nth-child(1) { animation-delay: 240ms; }
+  .auth-point:nth-child(2) { animation-delay: 320ms; }
+  .auth-point:nth-child(3) { animation-delay: 400ms; }
+}

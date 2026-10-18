@@ -1,0 +1,154 @@
+/*
+ * Choice controls as switches.
+ *
+ * Every labelled checkbox and radio button is drawn as an on / off switch: a pill track with
+ * a knob that slides across — dim and left when off, brass and right when on. A checkbox is a
+ * switch you flip on its own; a radio group is a set of switches where turning one on turns the
+ * others off. (Checkboxes without a visible label — the row-selection boxes in tables — stay
+ * ordinary checkboxes.) Selects are rounded glass with a chevron that turns on focus.
+ *
+ * Scoped to the content panel and the connect wizard, token-driven for light and dark, and
+ * instant for visitors who ask for reduced motion. The !important flags are deliberate: Polaris
+ * styles each control state (hover, pressed, checked, disabled) separately, and this must win in all of them.
+ */
+
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) {
+  --sw-w: 2.5rem;
+  --sw-h: 1.4rem;
+  --sw-knob: 1.05rem;
+  --sw-pad: 0.175rem;
+  --sw-travel: calc(var(--sw-w) - var(--sw-knob) - 2 * var(--sw-pad));
+}
+
+/* the control box becomes the switch's size */
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) .Polaris-Choice__Control {
+  width: var(--sw-w);
+  height: var(--sw-h);
+  margin-right: 0.75rem;
+  align-items: center;
+}
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) :is(.Polaris-Checkbox, .Polaris-RadioButton) {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+/* the track */
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop) {
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--p-color-text) 26%, transparent) !important;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.22) !important;
+  transition: background-color var(--dur-med) ease, box-shadow var(--dur-med) var(--ease-out);
+}
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden):hover :is(.Polaris-Checkbox__Input, .Polaris-RadioButton__Input):not(:checked, :disabled) + :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop) {
+  background: color-mix(in srgb, var(--p-color-text) 36%, transparent) !important;
+}
+
+/* the knob */
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop)::before {
+  content: "" !important;
+  position: absolute !important;
+  top: 50% !important;
+  left: var(--sw-pad) !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: var(--sw-knob) !important;
+  height: var(--sw-knob) !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: #fff !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35) !important;
+  opacity: 1 !important;
+  transform: translate3d(0, -50%, 0) !important;
+  transition: transform 380ms var(--ease-spring), width 180ms var(--ease-out) !important;
+}
+
+/* on */
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) :is(.Polaris-Checkbox__Input, .Polaris-RadioButton__Input):checked + :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop),
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden):hover :is(.Polaris-Checkbox__Input, .Polaris-RadioButton__Input):checked + :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop) {
+  background: linear-gradient(135deg, #e9c46a, var(--ui-accent)) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-accent) 22%, transparent), 0 2px 8px -2px color-mix(in srgb, var(--ui-accent) 65%, transparent) !important;
+}
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) :is(.Polaris-Checkbox__Input, .Polaris-RadioButton__Input):checked + :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop)::before {
+  transform: translate3d(var(--sw-travel), -50%, 0) !important;
+}
+
+/* pressed: the knob stretches, like a physical switch */
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden):active :is(.Polaris-Checkbox__Input, .Polaris-RadioButton__Input):not(:disabled) + :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop)::before {
+  width: calc(var(--sw-knob) * 1.3) !important;
+}
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden):active :is(.Polaris-Checkbox__Input, .Polaris-RadioButton__Input):checked:not(:disabled) + :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop)::before {
+  transform: translate3d(calc(var(--sw-travel) - var(--sw-knob) * 0.3), -50%, 0) !important;
+}
+
+/* a checkbox's tick has no place on a switch; "some selected" shows the knob in the middle */
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) .Polaris-Checkbox__Icon {
+  display: none;
+}
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) .Polaris-Checkbox__Input--indeterminate + .Polaris-Checkbox__Backdrop::before {
+  transform: translate3d(calc(var(--sw-travel) / 2), -50%, 0) !important;
+}
+
+/* disabled */
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) :is(.Polaris-Checkbox__Input, .Polaris-RadioButton__Input):disabled + :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop) {
+  opacity: 0.5;
+}
+
+/* keyboard focus */
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) :is(.Polaris-Checkbox__Input, .Polaris-RadioButton__Input):focus-visible + :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop) {
+  outline: 2px solid var(--p-color-border-focus);
+  outline-offset: 3px;
+}
+:is(.shell-panel, .wizard-root) .Polaris-Choice:not(.Polaris-Choice--labelHidden) :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop)::after {
+  display: none;
+}
+
+/* ---------- choice lists: each option is a row that lights up on hover and when on ---------- */
+:is(.shell-panel, .wizard-root) .Polaris-ChoiceList__Choices .Polaris-Choice {
+  margin-inline: -0.5rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.75rem;
+  transition: background-color var(--dur-fast) ease;
+}
+:is(.shell-panel, .wizard-root) .Polaris-ChoiceList__Choices .Polaris-Choice:hover {
+  background: color-mix(in srgb, var(--ui-accent) 7%, transparent);
+}
+:is(.shell-panel, .wizard-root) .Polaris-ChoiceList__Choices .Polaris-Choice:has(input:checked) {
+  background: color-mix(in srgb, var(--ui-accent) 11%, transparent);
+}
+
+/* ---------- selects ---------- */
+:is(.shell-panel, .wizard-root) .Polaris-Select__Backdrop {
+  border-width: 1px;
+  border-radius: 0.75rem;
+  background: var(--p-color-input-bg-surface);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+:is(.shell-panel, .wizard-root) .Polaris-Select:hover .Polaris-Select__Backdrop {
+  background: color-mix(in srgb, var(--ui-accent) 5%, var(--p-color-input-bg-surface));
+}
+:is(.shell-panel, .wizard-root) .Polaris-Select__Content {
+  font-weight: 500;
+}
+:is(.shell-panel, .wizard-root) .Polaris-Select__Icon {
+  transition: transform var(--dur-med) var(--ease-out);
+}
+:is(.shell-panel, .wizard-root) .Polaris-Select__Icon svg {
+  transition: fill var(--dur-fast) ease;
+}
+:is(.shell-panel, .wizard-root) .Polaris-Select:focus-within .Polaris-Select__Icon {
+  transform: rotate(180deg);
+}
+:is(.shell-panel, .wizard-root) .Polaris-Select:focus-within .Polaris-Select__Icon svg {
+  fill: var(--ui-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.shell-panel, .wizard-root) .Polaris-Choice :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop),
+  :is(.shell-panel, .wizard-root) .Polaris-Choice :is(.Polaris-Checkbox__Backdrop, .Polaris-RadioButton__Backdrop)::before,
+  :is(.shell-panel, .wizard-root) .Polaris-Select__Icon,
+  :is(.shell-panel, .wizard-root) .Polaris-ChoiceList__Choices .Polaris-Choice {
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,136 @@
+/*
+ * The app's dropdown (components/ui/Select.tsx): a field-like button and a glass list panel.
+ * Token-driven for light and dark; the chevron turns and the tick springs in unless the
+ * visitor prefers reduced motion.
+ */
+
+.ui-select-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.375rem 0.5rem 0.375rem 0.75rem;
+  border: 1px solid var(--p-color-input-border);
+  border-radius: 0.75rem;
+  background: var(--p-color-input-bg-surface);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+  color: var(--p-color-text);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 560;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast, 150ms) ease, background-color var(--dur-fast, 150ms) ease, box-shadow var(--dur-med, 300ms) var(--ease-out, ease);
+}
+.ui-select-button:hover:not(:disabled) {
+  border-color: var(--p-color-input-border-hover);
+  background: color-mix(in srgb, var(--ui-accent) 5%, var(--p-color-input-bg-surface));
+}
+.ui-select-button:focus-visible,
+.ui-select-button[data-open="true"] {
+  border-color: var(--ui-accent);
+  outline: none;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ui-accent) 20%, transparent);
+}
+.ui-select-button[data-error="true"] {
+  border-color: var(--p-color-border-critical-secondary);
+}
+.ui-select-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.ui-select-inline-label {
+  flex: none;
+  color: var(--p-color-text-secondary);
+  font-weight: 500;
+}
+.ui-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-select-value[data-placeholder="true"] {
+  color: var(--p-color-text-secondary);
+  font-weight: 450;
+}
+.ui-select-chevron {
+  display: inline-flex;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+  color: var(--p-color-icon-secondary);
+  transition: transform var(--dur-med, 300ms) var(--ease-out, ease), color var(--dur-fast, 150ms) ease;
+}
+.ui-select-button[data-open="true"] .ui-select-chevron {
+  color: var(--ui-accent);
+  transform: rotate(180deg);
+}
+
+/* the list */
+.ui-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  max-height: 18rem;
+  padding: 0.375rem;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.ui-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.5rem;
+  color: var(--p-color-text);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color var(--dur-fast, 150ms) ease;
+}
+.ui-select-option[data-active="true"] {
+  background: color-mix(in srgb, var(--ui-accent) 12%, transparent);
+}
+.ui-select-option[data-selected="true"] {
+  font-weight: 650;
+}
+.ui-select-option[data-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ui-select-option-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ui-select-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-select-option-help {
+  color: var(--p-color-text-secondary);
+  font-size: 0.75rem;
+}
+.ui-select-tick {
+  display: inline-flex;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+  color: var(--ui-accent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ui-select-tick {
+    animation: ui-pop 320ms var(--ease-spring, ease) both;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-select-button,
+  .ui-select-chevron,
+  .ui-select-option {
+    transition-duration: 0.01ms;
+  }
+}

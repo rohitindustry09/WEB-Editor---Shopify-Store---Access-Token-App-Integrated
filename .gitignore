@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local store accounts (password hashes) and store scraper job history — never commit
+/data
+
+# scraped product media saved locally by the store scraper tool — never commit
+/uploads
+
+# local backups, scraper jobs, and assistant planning files — never commit
+*.zip
+/.data
+/.claude/

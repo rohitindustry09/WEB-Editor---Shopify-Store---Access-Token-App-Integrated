@@ -1,0 +1,285 @@
+/* Only the pieces Polaris has no component for live here — the image stage,
+   its processing overlay, the before/after slider, and the thumbnail picker.
+   Everything is expressed in Polaris design tokens (including Polaris's own
+   "magic" purple, the palette it uses for AI features) so this page stays in
+   step with the rest of the admin instead of hardcoding a parallel theme. */
+
+.stageFrame {
+  border-radius: var(--p-border-radius-400);
+  padding: var(--p-space-300);
+  background: var(--p-color-bg-surface-magic);
+  border: 1px solid var(--p-color-border-magic);
+}
+
+.stage {
+  position: relative;
+  border-radius: var(--p-border-radius-300);
+  overflow: hidden;
+  min-height: 320px;
+  height: 44vh;
+  max-height: 520px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--p-color-bg-surface);
+  box-shadow: var(--p-shadow-100);
+}
+
+.stageImg {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: block;
+  transition: filter 200ms ease;
+}
+.stageImgDim { filter: brightness(0.55) saturate(0.75); }
+
+/* --- Processing overlay ---------------------------------------------------
+   A scrim first so the wash and the loader stay legible over a bright photo,
+   then a gradient tile 300% the size of the box: animating its position by
+   exactly one tile width loops back to an identical frame, so the colour
+   keeps flowing with no seam and no restart. */
+.processingScrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 10, 45, 0.42);
+}
+.processingOverlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    rgba(128, 81, 255, 0.9) 0%,
+    rgba(99, 102, 241, 0.9) 25%,
+    rgba(217, 70, 239, 0.8) 50%,
+    rgba(128, 81, 255, 0.9) 75%,
+    rgba(99, 102, 241, 0.9) 100%
+  );
+  background-size: 300% 300%;
+  mix-blend-mode: screen;
+  opacity: 0.55;
+  animation: gradientFlow 4s linear infinite;
+}
+@keyframes gradientFlow {
+  from { background-position: 0% 50%; }
+  to { background-position: 300% 50%; }
+}
+
+.corner {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-color: #fff;
+  opacity: 0.9;
+}
+.cornerTl { top: var(--p-space-400); left: var(--p-space-400); border-top: 3px solid; border-left: 3px solid; border-radius: var(--p-border-radius-200) 0 0 0; }
+.cornerTr { top: var(--p-space-400); right: var(--p-space-400); border-top: 3px solid; border-right: 3px solid; border-radius: 0 var(--p-border-radius-200) 0 0; }
+.cornerBl { bottom: var(--p-space-400); left: var(--p-space-400); border-bottom: 3px solid; border-left: 3px solid; border-radius: 0 0 0 var(--p-border-radius-200); }
+.cornerBr { bottom: var(--p-space-400); right: var(--p-space-400); border-bottom: 3px solid; border-right: 3px solid; border-radius: 0 0 var(--p-border-radius-200) 0; }
+
+.loaderWrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--p-space-200);
+  padding: var(--p-space-400);
+}
+.spinnerRing {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--p-border-radius-full);
+  background: conic-gradient(from 0deg, rgba(255, 255, 255, 0) 0%, #fff 100%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 6px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 6px));
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loaderPercent { color: #fff; font-size: 1.65rem; font-weight: 700; line-height: 1; }
+.loaderLabel {
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.loaderBarTrack {
+  width: min(240px, 70%);
+  height: 6px;
+  border-radius: var(--p-border-radius-full);
+  background: rgba(255, 255, 255, 0.28);
+  overflow: hidden;
+}
+.loaderBarFill {
+  height: 100%;
+  border-radius: var(--p-border-radius-full);
+  background: #fff;
+  transition: width 200ms ease;
+}
+
+.stageOverlayTop {
+  position: absolute;
+  top: var(--p-space-400);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+}
+
+.errorOverlay {
+  position: absolute;
+  inset: 0;
+  background: var(--p-color-bg-surface-critical);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--p-space-200);
+  padding: var(--p-space-400);
+  text-align: center;
+}
+
+/* --- Before / after slider ----------------------------------------------- */
+.compare {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: col-resize;
+  user-select: none;
+}
+.compareChecker {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(45deg, #e3e3e3 25%, transparent 25%), linear-gradient(-45deg, #e3e3e3 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e3e3e3 75%), linear-gradient(-45deg, transparent 75%, #e3e3e3 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-color: #fafafa;
+}
+.compareImg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.compareHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  transform: translateX(-50%);
+  border-left: 2px solid #fff;
+  box-shadow: 0 0 0 1px var(--p-color-border-magic);
+}
+.compareGrip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 38px;
+  height: 38px;
+  border-radius: var(--p-border-radius-full);
+  background: var(--p-color-bg-fill-magic);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
+  box-shadow: var(--p-shadow-300);
+}
+.compareLabel {
+  position: absolute;
+  top: var(--p-space-400);
+  pointer-events: none;
+}
+.compareLabelLeft { left: var(--p-space-400); }
+.compareLabelRight { right: var(--p-space-400); }
+
+/* --- Thumbnail picker ----------------------------------------------------- */
+.thumbstrip {
+  display: flex;
+  gap: var(--p-space-300);
+  overflow-x: auto;
+  padding: var(--p-space-100) var(--p-space-050) var(--p-space-200);
+}
+.thumbWrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.thumb {
+  /* Reset — this is a real <button> so it gets Tab/Enter/Space for free,
+     but needs the browser's default button chrome stripped back out. */
+  appearance: none;
+  font: inherit;
+  position: relative;
+  display: block;
+  flex-shrink: 0;
+  width: 80px;
+  height: 80px;
+  padding: 0;
+  border-radius: var(--p-border-radius-300);
+  overflow: hidden;
+  border: 2px solid var(--p-color-border);
+  background: var(--p-color-bg-surface-secondary);
+  cursor: pointer;
+  transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+.thumb:hover { transform: translateY(-2px); box-shadow: var(--p-shadow-200); }
+.thumb:focus-visible { outline: var(--p-border-width-050) solid var(--p-color-border-focus); outline-offset: 2px; }
+.thumbActive { border-color: var(--p-color-bg-fill-magic); box-shadow: 0 0 0 3px var(--p-color-bg-fill-magic-secondary); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumbDot {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 11px;
+  height: 11px;
+  border-radius: var(--p-border-radius-full);
+  border: 2px solid #fff;
+}
+.thumbDotIdle { background: var(--p-color-border-magic); }
+.thumbDotProcessing { background: var(--p-color-bg-fill-magic); animation: dotPulse 0.9s ease-in-out infinite; }
+.thumbDotDone { background: var(--p-color-bg-fill-success); }
+.thumbDotError { background: var(--p-color-bg-fill-critical); }
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.75; transform: scale(1.2); }
+}
+.thumbRemove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  z-index: 1;
+  border-radius: var(--p-border-radius-full);
+  background: var(--p-color-bg-surface);
+  box-shadow: var(--p-shadow-100);
+}
+
+/* --- Primary action button --------------------------------------------- */
+/* Polaris's primary Button doesn't have a "magic"/gradient variant, so this
+   wraps the real Polaris <Button> and repaints just its fill — every other
+   visual (focus ring, spacing) stays exactly the Polaris one.
+   Polaris adds its `--disabled` class whenever EITHER `disabled` OR
+   `loading` is true (loading buttons are disabled buttons under the hood),
+   so gating purely on "not disabled" would strip the gradient during
+   processing — exactly the moment it matters most. The `--loading` class is
+   the one that's actually true only while processing, so it's targeted
+   explicitly alongside the plain not-disabled case; a button that's
+   disabled and NOT loading (the real "All done" end state) still falls
+   through to Polaris's own grayed-out disabled look. */
+.magicButton :global(.Polaris-Button--variantPrimary):not(:global(.Polaris-Button--disabled)),
+.magicButton :global(.Polaris-Button--variantPrimary):global(.Polaris-Button--loading) {
+  background: linear-gradient(135deg, var(--p-color-bg-fill-magic) 0%, #6d5bf6 100%);
+  box-shadow: var(--p-shadow-200);
+}
+.magicButton :global(.Polaris-Button--variantPrimary):not(:global(.Polaris-Button--disabled)):hover {
+  background: linear-gradient(135deg, #6d5bf6 0%, var(--p-color-bg-fill-magic) 100%);
+}
