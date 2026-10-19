@@ -71,7 +71,13 @@ export async function getAuthSecret(): Promise<string> {
   // One creation at a time, so two first requests can't write two different secrets.
   pending ??= (async () => {
     const data = await readFileOrDefault();
-    await persist(data);
+    try {
+      await persist(data);
+    } catch {
+      // A read-only disk (Vercel and similar hosts) can't keep a generated secret, and a secret that differs
+      // between server instances would sign people out at random — so the host must provide one.
+      throw new Error("This server can't store files, so the sign-in secret has to come from the AUTH_SECRET environment variable. Add AUTH_SECRET (a long random string) in your hosting settings and redeploy.");
+    }
     cachedSecret = data.authSecret;
     return data.authSecret;
   })().finally(() => {

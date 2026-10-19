@@ -40,6 +40,7 @@ export async function POST(request: Request) {
 
   const outcomes: ApplyOutcome[] = await mapWithConcurrency(body.items, PARALLEL_ITEMS, async ({ item }) => applyMerchantItem(item));
 
+  let historySaved = true;
   if (body.history) {
     const entries: HistoryEntry[] = [];
     body.items.forEach(({ item, entries: itemEntries }, index) => {
@@ -51,8 +52,11 @@ export async function POST(request: Request) {
         entries.push(...itemEntries);
       }
     });
-    await appendEntries(session.shop, { runId: body.history.runId, tool: String(body.history.tool), label: String(body.history.label) }, entries);
+    historySaved = await appendEntries(session.shop, { runId: body.history.runId, tool: String(body.history.tool), label: String(body.history.label) }, entries).then(
+      () => true,
+      () => false,
+    );
   }
 
-  return NextResponse.json({ ok: true, outcomes });
+  return NextResponse.json({ ok: true, outcomes, historySaved });
 }

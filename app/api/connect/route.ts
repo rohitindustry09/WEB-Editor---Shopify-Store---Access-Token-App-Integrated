@@ -70,16 +70,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "Too many wrong keys for this store. Wait a few minutes and try again." }, { status: 429 });
   }
 
+  let shopInfo: Awaited<ReturnType<typeof testShopConnection>>;
   try {
-    const shopInfo = await testShopConnection(shop, token);
-    failures.delete(shop);
+    shopInfo = await testShopConnection(shop, token);
+  } catch (error) {
+    failures.set(shop, [...recentFailures(shop), Date.now()]);
+    const message = error instanceof ShopifyAPIError ? error.message : "Couldn't verify that token against this store.";
+    return NextResponse.json({ ok: false, error: message }, { status: 401 });
+  }
+
+  // From here the key is known to be good; a failure is the server being unable to start the session.
+  failures.delete(shop);
+  try {
     const granted = await readGrantedScopes(shop, token);
     await startAuthSession(name);
     await setSession({ shop, token, scopes: granted ?? (Array.isArray(body.scopes) ? body.scopes.filter((s) => typeof s === "string") : []) });
     return NextResponse.json({ ok: true, shopName: shopInfo.name, domain: shopInfo.myshopifyDomain, granted });
   } catch (error) {
-    failures.set(shop, [...recentFailures(shop), Date.now()]);
-    const message = error instanceof ShopifyAPIError ? error.message : "Couldn't verify that token against this store.";
-    return NextResponse.json({ ok: false, error: message }, { status: 401 });
+    const message = error instanceof Error ? error.message : "The token is valid, but the server couldn't start your session.";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
