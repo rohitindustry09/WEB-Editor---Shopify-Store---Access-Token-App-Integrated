@@ -35,7 +35,7 @@ export type CancelMessage = { type: "cancel" };
 export type IncomingMessage = RunMessage | CancelMessage;
 
 export type WorkerResponse =
-  | { type: "result"; path: string; blob: Blob; filename: string; mimeType: string; originalSize: number }
+  | { type: "result"; path: string; blob: Blob; filename: string; mimeType: string; originalSize: number; width: number; height: number }
   | { type: "error"; path: string; message: string }
   | { type: "done" };
 
@@ -84,6 +84,8 @@ workerSelf.onmessage = async (event) => {
         filename: processed.filename,
         mimeType: processed.mimeType,
         originalSize: processed.originalSize,
+        width: processed.width,
+        height: processed.height,
       });
     } catch (err) {
       workerSelf.postMessage({ type: "error", path: job.path, message: err instanceof Error ? err.message : "Couldn't convert this image." });

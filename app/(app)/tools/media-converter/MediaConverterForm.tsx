@@ -22,13 +22,14 @@ import { Select } from "@/components/ui/Select";
 import { FileIcon, XCircleIcon } from "@shopify/polaris-icons";
 import { formatFileSize } from "@/lib/csvSkuColors";
 import { loadImageZip, readZipImage, isImageFilename, guessImageMimeType, type StreamingZipHandle, type ZipImageFile } from "@/lib/skuMediaZip";
-import { processImage, type ConversionSettings, type ProcessedImage } from "@/lib/imageProcessing";
+import { MEGAPIXEL_LIMIT, processImage, type ConversionSettings, type ProcessedImage } from "@/lib/imageProcessing";
 import type { ImageProcessStep } from "@/components/products/MediaImageGrid";
 import {
   MediaConversionSettings,
   DEFAULT_CONVERSION_STATE,
   type ConversionUiState,
 } from "@/components/products/MediaConversionSettings";
+import { conversionTag } from "@/lib/conversionSettings";
 import { computeBatchSignature } from "./zipSignature";
 import { getJobMeta, saveJobMeta, saveResult, loadSavedResults, clearJob, type JobMeta } from "./progressStore";
 import { ServerSaveQueue } from "./serverSaveQueue";
@@ -47,6 +48,21 @@ function toConversionSettings(ui: ConversionUiState): ConversionSettings {
     resizeOverMegapixels: ui.resizeOverMegapixels,
     customResize: ui.customResizeEnabled ? { width: ui.customWidth, height: ui.customHeight } : null,
   };
+}
+
+/**
+ * Bumped whenever the converter itself changes in a way that changes its output (v2: the megapixel resize now always
+ * lands within the limit), so results saved by an older version are never mistaken for current ones.
+ */
+const CONVERTER_VERSION = "v2";
+
+/**
+ * A short, folder-safe key for everything that changes how a converted file looks: format, quality, size cap, the
+ * megapixel resize, custom size and renaming. The server folder and the saved progress are both keyed by it, so changing
+ * a setting converts afresh instead of picking up files an earlier run made with different settings.
+ */
+function settingsKey(ui: ConversionUiState): string {
+  return `${conversionTag(toConversionSettings(ui), ui.renamePattern)}-${CONVERTER_VERSION}`;
 }
 
 function loadStoredConversionSettings(): ConversionUiState {
@@ -207,6 +223,8 @@ export function MediaConverterForm() {
   const [lastResult, setLastResult] = useState<
     { kind: "blob"; blob: Blob; filename: string; count: number } | { kind: "url"; url: string; filename: string; count: number } | null
   >(null);
+  // The biggest converted image of the current run (by pixel count) — shown afterwards so the size rule can be checked.
+  const [largestOutput, setLargestOutput] = useState<{ width: number; height: number } | null>(null);
   const cancelledRef = useRef(false);
   // Set for the duration of a `convertAndDownload` run — lets
   // `cancelConvert` reach into the currently-running worker pool without
@@ -225,11 +243,17 @@ export function MediaConverterForm() {
   // tools already use, so converted images land on disk as they're
   // produced instead of only ever existing as an in-memory Blob.
   const [batchName, setBatchName] = useState("images");
+  // The folder on the server for this batch's converted files. It includes the settings key, because the server keeps a
+  // file that is already there instead of overwriting it — without this, a second run with other settings would hand back the first run's files.
+  // The same cleaning the server applies to a folder name, so the name used to save and the name used to build the zip are identical.
+  const outputFolder = `${batchName.replace(/[\\:*?"<>|]/g, "-").trim()}-${settingsKey(conversion)}`;
   // Identifies "this same batch" across a refresh/restart — see
   // zipSignature.ts. `savedProgress` is only set when a previous run's
   // progress was found in IndexedDB for the batch just added; resuming or
   // discarding it clears this back to null.
-  const [signature, setSignature] = useState<string | null>(null);
+  const [baseSignature, setBaseSignature] = useState<string | null>(null);
+  // Saved progress belongs to this zip AND these settings: results made with other settings are not offered for resuming.
+  const signature = baseSignature ? `${baseSignature}-${settingsKey(conversion)}` : null;
   const [savedProgress, setSavedProgress] = useState<{ doneCount: number; totalCount: number } | null>(null);
   const [resumingProgress, setResumingProgress] = useState(false);
   const [serverSaveProgress, setServerSaveProgress] = useState<{ done: number; total: number } | null>(null);
@@ -248,6 +272,10 @@ export function MediaConverterForm() {
     setImageStatus({});
     setPreviewSummary(null);
     setLastResult(null);
+    setSavedProgress(null);
+    if (baseSignature) {
+      void getJobMeta(`${baseSignature}-${settingsKey(next)}`).then((meta) => setSavedProgress(meta && meta.doneCount > 0 ? { doneCount: meta.doneCount, totalCount: meta.totalCount } : null));
+    }
     if (typeof window !== "undefined") {
       try {
         window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
@@ -265,9 +293,10 @@ export function MediaConverterForm() {
     setZipping(false);
     setConvertError(null);
     setLastResult(null);
+    setLargestOutput(null);
     processedCacheRef.current.clear();
     setBatchName("images");
-    setSignature(null);
+    setBaseSignature(null);
     setSavedProgress(null);
     setServerSaveProgress(null);
     setSavePurpose(null);
@@ -303,8 +332,8 @@ export function MediaConverterForm() {
       // shown as a banner rather than auto-applied, so it's the user's
       // call whether to pick up where they left off.
       const sig = await computeBatchSignature(picked.name, picked.size, loaded.imagePaths);
-      setSignature(sig);
-      const meta = await getJobMeta(sig);
+      setBaseSignature(sig);
+      const meta = await getJobMeta(`${sig}-${settingsKey(conversion)}`);
       setSavedProgress(meta && meta.doneCount > 0 ? { doneCount: meta.doneCount, totalCount: meta.totalCount } : null);
     } catch (err) {
       setParseError(err instanceof Error ? err.message : "Couldn't read this zip file.");
@@ -355,8 +384,8 @@ export function MediaConverterForm() {
     // the server's own skip-if-exists) under the same folder.
     setBatchName("dropped-images");
     const sig = await computeBatchSignature("dropped-images", totalSize, paths);
-    setSignature(sig);
-    const meta = await getJobMeta(sig);
+    setBaseSignature(sig);
+    const meta = await getJobMeta(`${sig}-${settingsKey(conversion)}`);
     setSavedProgress(meta && meta.doneCount > 0 ? { doneCount: meta.doneCount, totalCount: meta.totalCount } : null);
   };
 
@@ -465,6 +494,7 @@ export function MediaConverterForm() {
     cancelledRef.current = false;
     setConvertError(null);
     setLastResult(null);
+    setLargestOutput(null);
     setConverting(true);
     setConvertProgress({ done: 0, total: imagePaths.length });
     setEstimatedOutputSize(0);
@@ -516,7 +546,7 @@ export function MediaConverterForm() {
         queueImageStep(path, "done", cached.blob.size);
         doneCount += 1;
         progressDone += 1;
-        serverSaveQueue.push({ batchName, relativePath: outputPath, blob: cached.blob });
+        serverSaveQueue.push({ batchName: outputFolder, relativePath: outputPath, blob: cached.blob });
       } else {
         queueImageStep(path, "checking");
         jobs.push({ path });
@@ -539,11 +569,14 @@ export function MediaConverterForm() {
                 blob: result.blob,
                 filename: result.filename,
                 mimeType: result.mimeType,
-                width: 0,
-                height: 0,
+                width: result.width,
+                height: result.height,
                 originalSize: result.originalSize,
               };
               processedCacheRef.current.set(path, processed);
+              if (result.width * result.height > 0) {
+                setLargestOutput((previous) => (!previous || result.width * result.height > previous.width * previous.height ? { width: result.width, height: result.height } : previous));
+              }
               const outputPath = outputPathFor(path, processed.filename, conversion.renamePattern, indexByPath.get(path) ?? 0);
               convertedPaths.push({ path, outputPath });
               queueImageStep(path, "done", processed.blob.size);
@@ -551,7 +584,7 @@ export function MediaConverterForm() {
               progressDone += 1;
               setConvertProgress({ done: progressDone, total: totalCount });
 
-              serverSaveQueue.push({ batchName, relativePath: outputPath, blob: processed.blob });
+              serverSaveQueue.push({ batchName: outputFolder, relativePath: outputPath, blob: processed.blob });
 
               if (signature) {
                 void saveResult(signature, path, processed.filename, processed.blob);
@@ -654,7 +687,7 @@ export function MediaConverterForm() {
         setConvertError("Cancelled — everything saved so far is on disk at uploads/Media-format-converter/, ready to export anytime.");
         return;
       }
-      const downloadUrl = `/api/media-converter/export-zip?batch=${encodeURIComponent(batchName)}`;
+      const downloadUrl = `/api/media-converter/export-zip?batch=${encodeURIComponent(outputFolder)}&name=${encodeURIComponent(batchName)}`;
       const filename = `${batchName}-converted.zip`;
       triggerUrlDownload(downloadUrl);
       setLastResult({ kind: "url", url: downloadUrl, filename, count: convertedPaths.length });
@@ -819,8 +852,8 @@ export function MediaConverterForm() {
                       />
                       <Text as="p" variant="bodySm" tone="subdued">
                         {savePurpose === "download"
-                          ? `Saving to server — ${serverSaveProgress.done} of ${serverSaveProgress.total} images written to uploads/Media-format-converter/${batchName}/. Already-saved files are skipped. Your download starts automatically once this reaches 100%.`
-                          : `Finishing already-queued saves — ${serverSaveProgress.done} of ${serverSaveProgress.total} images written to uploads/Media-format-converter/${batchName}/ so far. No download will start; everything saved is kept for next time.`}
+                          ? `Saving to server — ${serverSaveProgress.done} of ${serverSaveProgress.total} images written to uploads/Media-format-converter/${outputFolder}/. Already-saved files are skipped. Your download starts automatically once this reaches 100%.`
+                          : `Finishing already-queued saves — ${serverSaveProgress.done} of ${serverSaveProgress.total} images written to uploads/Media-format-converter/${outputFolder}/ so far. No download will start; everything saved is kept for next time.`}
                       </Text>
                     </BlockStack>
                   )}
@@ -838,6 +871,12 @@ export function MediaConverterForm() {
                           {lastResult.filename}
                           {lastResult.count > 1 ? ` — ${lastResult.count} images.` : "."}
                         </p>
+                        {largestOutput && (
+                          <p>
+                            {`Largest converted image: ${largestOutput.width} × ${largestOutput.height} px (${((largestOutput.width * largestOutput.height) / 1_000_000).toFixed(1)} MP)`}
+                            {largestOutput.width * largestOutput.height > MEGAPIXEL_LIMIT ? ` — over the ${MEGAPIXEL_LIMIT / 1_000_000} MP limit, so the megapixel resize was off for this run.` : ` — within the ${MEGAPIXEL_LIMIT / 1_000_000} MP limit.`}
+                          </p>
+                        )}
                         <InlineStack>
                           <Button
                             onClick={() =>

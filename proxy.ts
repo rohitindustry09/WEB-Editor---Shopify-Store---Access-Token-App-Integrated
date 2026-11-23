@@ -6,7 +6,7 @@ import { AUTH_COOKIE } from "@/lib/auth/cookie";
  * The connect wizard is the front door: you reach it without signing in, and pasting a store's access key
  * on its last step is what signs you in. (The handlers behind /api/connect and /api/disconnect check for themselves.)
  */
-const PUBLIC_PATHS = ["/connect", "/api/connect", "/api/disconnect"];
+const PUBLIC_PATHS = ["/connect", "/api/connect", "/api/disconnect", "/api/auth/shopify"];
 
 function matches(pathname: string, paths: string[]): boolean {
   return paths.some((path) => pathname === path || pathname.startsWith(`${path}/`));

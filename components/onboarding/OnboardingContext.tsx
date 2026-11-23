@@ -9,6 +9,8 @@ interface OnboardingState {
 }
 
 interface OnboardingContextValue extends OnboardingState {
+  /** True when this server has the Shopify app's credentials, so "Connect with Shopify" can work. */
+  oauthReady: boolean;
   setStoreName: (value: string) => void;
   toggleCapability: (id: string) => void;
 }
@@ -22,7 +24,7 @@ const STORAGE_KEY = "brasstown-onboarding";
 
 const OnboardingContext = createContext<OnboardingContextValue | null>(null);
 
-export function OnboardingProvider({ children }: { children: ReactNode }) {
+export function OnboardingProvider({ children, oauthReady = false }: { children: ReactNode; oauthReady?: boolean }) {
   const [state, setState] = useState<OnboardingState>(DEFAULT_STATE);
   const [hydrated, setHydrated] = useState(false);
 
@@ -75,7 +77,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     });
 
   return (
-    <OnboardingContext.Provider value={{ ...state, setStoreName, toggleCapability }}>
+    <OnboardingContext.Provider value={{ ...state, oauthReady, setStoreName, toggleCapability }}>
       {children}
     </OnboardingContext.Provider>
   );

@@ -8,8 +8,8 @@ import { fetchPerformance, checkPerformance } from "./performance";
 import { checkSocialPresence } from "./socialChecks";
 import { analyzeKeywordDensity } from "./keywordDensity";
 import { computeScores } from "./scoring";
-import { DEFAULT_MAX_PAGES, type AuditStepId } from "./constants";
-import type { AuditCategory, Severity, SeoAuditReport } from "./types";
+import { DEFAULT_MAX_PAGES, MAX_PAGES_LIMIT, type AuditStepId } from "./constants";
+import type { AuditCategory, Severity, SeoAuditReport, LiveStoreInfo } from "./types";
 
 export class InvalidDomainError extends Error {
   constructor(message: string) {
@@ -40,6 +40,7 @@ export type AuditEvent =
   | CrawlEvent
   | { type: "step-start"; id: AuditStepId }
   | { type: "step-done"; id: AuditStepId; detail?: string }
+  | { type: "live-store"; total: number; counts: LiveStoreInfo["counts"]; errors: string[] }
   | { type: "fatal-error"; message: string };
 
 export type EmitAuditEvent = (event: AuditEvent) => void;
@@ -54,21 +55,24 @@ const PAGE_TITLE_LIMIT = 200;
  * so this function's own job is running every check module over whatever
  * `crawlSite` found and aggregating the results into one report.
  */
-export async function runStreamingAudit(domainInput: string, onEvent: EmitAuditEvent, maxPages: number = DEFAULT_MAX_PAGES): Promise<SeoAuditReport> {
-  const origin = normalizeDomainInput(domainInput);
+export async function runStreamingAudit(domainInput: string, onEvent: EmitAuditEvent, maxPages: number = DEFAULT_MAX_PAGES, liveStore: LiveStoreInfo | null = null, workers = 0, mode: "resume" | "fresh" = "fresh"): Promise<SeoAuditReport> {
+  // On the connected store the primary domain is the real address, whatever was typed (e.g. the .myshopify.com one).
+  const origin = liveStore ? normalizeDomainInput(liveStore.primaryDomain) : normalizeDomainInput(domainInput);
+  if (liveStore) onEvent({ type: "live-store", total: liveStore.total, counts: liveStore.counts, errors: liveStore.errors });
+  const cap = maxPages === 0 ? (liveStore ? Math.max(liveStore.total, 1) : MAX_PAGES_LIMIT) : maxPages;
 
   onEvent({ type: "step-start", id: "robots" });
   // "robots" and "sitemap" both complete inside crawlSite's discovery phase
   // — their own CrawlEvents (robots-checked / sitemap-checked) double as
   // this step's completion signal, forwarded straight through below.
-  const { crawl, parsedPages, findings } = await crawlSite(origin, maxPages, (event) => {
+  const { crawl, parsedPages, findings } = await crawlSite(origin, cap, (event) => {
     onEvent(event);
     if (event.type === "robots-checked") onEvent({ type: "step-done", id: "robots" });
     if (event.type === "sitemap-checked") {
       onEvent({ type: "step-done", id: "sitemap", detail: event.found ? `${event.pageCount} URLs` : undefined });
       onEvent({ type: "step-start", id: "crawl" });
     }
-  });
+  }, liveStore?.urls ?? [], workers, mode);
   onEvent({ type: "step-done", id: "crawl", detail: `${crawl.pages.length} pages` });
 
   // The sitemap's own <loc> ordering (or link-discovery order) has no
@@ -149,6 +153,7 @@ export async function runStreamingAudit(domainInput: string, onEvent: EmitAuditE
 
   return {
     domain: origin,
+    liveStore: liveStore ? { primaryDomain: liveStore.primaryDomain, host: liveStore.host, shop: liveStore.shop, counts: liveStore.counts, total: liveStore.total, errors: liveStore.errors } : undefined,
     pagesCrawled: crawl.pages,
     pageTitles,
     usedSitemap: crawl.usedSitemap,

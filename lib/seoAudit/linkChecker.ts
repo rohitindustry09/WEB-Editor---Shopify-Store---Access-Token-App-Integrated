@@ -11,6 +11,8 @@ import type { Finding, ParsedPage } from "./types";
 // wasn't actually broken. Lower concurrency reduces how often that happens
 // in the first place; the 429 retry/backoff below handles the rest.
 const LINK_CHECK_CONCURRENCY = 3;
+/** A large store has tens of thousands of distinct links and images; checking them all would take hours and trip the rate limiter. */
+const MAX_LINKS_CHECKED = 1500;
 const RATE_LIMIT_MAX_RETRY_DELAY_MS = 5000;
 const RATE_LIMIT_DEFAULT_RETRY_DELAY_MS = 1500;
 
@@ -99,8 +101,20 @@ async function fetchStatusWithRetry(url: string, method: "HEAD" | "GET"): Promis
  * once in isolation.
  */
 export async function checkLinks(pages: ParsedPage[]): Promise<Finding[]> {
-  const references = Array.from(collectLinkReferences(pages).values());
+  const crawled = new Set(pages.map((p) => p.url));
+  // Pages this audit already fetched successfully need no second request.
+  const all = Array.from(collectLinkReferences(pages).values()).filter((ref) => !crawled.has(ref.url));
+  const references = all.slice(0, MAX_LINKS_CHECKED);
   const findings: Finding[] = [];
+  if (all.length > references.length && pages.length > 0) {
+    findings.push({
+      category: "broken-links",
+      severity: "info",
+      page: pages[0].url,
+      message: `Checked ${references.length.toLocaleString("en-US")} of ${all.length.toLocaleString("en-US")} distinct links and images (the rest were skipped to keep the audit fast and avoid rate limits).`,
+      recommendation: "Pages and images are still all crawled; only the extra link-by-link check is sampled on very large stores.",
+    });
+  }
 
   await mapWithConcurrency(references, LINK_CHECK_CONCURRENCY, async (ref) => {
     let broken = false;

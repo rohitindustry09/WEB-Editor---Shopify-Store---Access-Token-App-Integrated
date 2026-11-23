@@ -30,11 +30,17 @@ type BlockNode =
 const textNode = (value: string): TextNode => ({ type: "text", value });
 const toDocument = (children: BlockNode[]): string => JSON.stringify({ type: "root", children });
 
-/** A cell's pieces: line breaks and a `||` both separate one piece from the next. */
+/** A bullet marker typed in front of a piece ("* ", "• " or "- "): it only has to be followed by a space, so "-5 °C" stays intact. */
+const BULLET_MARKER = /^[*•\-–]\s+/;
+
+/**
+ * A cell's pieces: a line break, a `|` or a `||` each starts the next piece. A bullet marker in front of a
+ * piece is dropped, so "* Height 5 cm | Width 3 cm" gives the pieces "Height 5 cm" and "Width 3 cm".
+ */
 export function splitSegments(text: string): string[] {
   return text
-    .split(/\n+|\s*\|\|\s*/)
-    .map((piece) => piece.trim())
+    .split(/\n+|\s*\|+\s*/)
+    .map((piece) => piece.trim().replace(BULLET_MARKER, "").trim())
     .filter(Boolean);
 }
 
@@ -42,13 +48,15 @@ export function splitSegments(text: string): string[] {
 export function plainTextToRichText(text: string, format: RichTextFormat): string {
   const segments = splitSegments(text);
   if (segments.length === 0) return toDocument([]);
-  if (format === "paragraphs") {
+  // A cell that starts with a bullet marker is a bulleted list even when "Paragraphs" is selected.
+  const asBullets = format === "paragraphs" && BULLET_MARKER.test(text.trim());
+  if (format === "paragraphs" && !asBullets) {
     return toDocument(segments.map((piece) => ({ type: "paragraph", children: [textNode(piece)] })));
   }
   return toDocument([
     {
       type: "list",
-      listType: format === "numbered" ? "ordered" : "unordered",
+      listType: format === "numbered" ? "ordered" : "unordered", // bullets, and a cell that started with a bullet marker, are unordered
       children: segments.map((piece) => ({ type: "list-item", children: [textNode(piece)] })),
     },
   ]);

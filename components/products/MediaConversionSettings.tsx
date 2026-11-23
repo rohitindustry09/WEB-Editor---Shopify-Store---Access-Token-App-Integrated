@@ -43,7 +43,8 @@ export const FORMAT_OPTIONS = [
   { label: "Keep original format", value: "original" },
   { label: "Auto (PNG if transparent, else WebP)", value: "auto" },
   { label: "WebP", value: "image/webp" },
-  { label: "JPEG", value: "image/jpeg" },
+  { label: "JPG (.jpg)", value: "image/jpg" },
+  { label: "JPEG (.jpeg)", value: "image/jpeg" },
   { label: "PNG", value: "image/png" },
 ];
 

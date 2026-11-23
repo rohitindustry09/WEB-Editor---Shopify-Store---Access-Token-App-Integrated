@@ -1,5 +1,7 @@
 import { guardApi } from "@/lib/auth/apiGuard";
 import { runStreamingAudit, InvalidDomainError, type AuditEvent } from "@/lib/seoAudit/runAudit";
+import { MAX_WORKERS } from "@/lib/seoAudit/constants";
+import { getLiveStoreInfo } from "@/lib/seoAudit/liveStore";
 import { DEFAULT_MAX_PAGES, MAX_PAGES_LIMIT, MAX_PAGES_OPTIONS } from "@/lib/seoAudit/crawler";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +17,7 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   const denied = await guardApi(request);
   if (denied) return denied;
-  let payload: { domain?: unknown; maxPages?: unknown };
+  let payload: { domain?: unknown; maxPages?: unknown; workers?: unknown; resume?: unknown };
   try {
     payload = await request.json();
   } catch {
@@ -28,6 +30,8 @@ export async function POST(request: Request) {
     ? requestedMaxPages
     : Math.max(1, Math.min(requestedMaxPages, MAX_PAGES_LIMIT));
 
+  const workers = typeof payload.workers === "number" && Number.isFinite(payload.workers) ? Math.max(0, Math.min(Math.floor(payload.workers), MAX_WORKERS)) : 0;
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -35,7 +39,12 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
       };
       try {
-        const report = await runStreamingAudit(domain, emit, maxPages);
+        // On the connected store, the page list comes from Shopify itself rather than from guessing at a sitemap.
+        const live = await getLiveStoreInfo().catch(() => null);
+        const typed = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+        const isOwnStore =
+          !!live && (!typed || typed === live.shop.toLowerCase() || typed === live.host.toLowerCase().replace(/^www\./, "") || live.host.toLowerCase().endsWith(typed));
+        const report = await runStreamingAudit(domain || live?.host || "", emit, maxPages, isOwnStore ? live : null, workers, payload.resume === true ? "resume" : "fresh");
         controller.enqueue(encoder.encode(JSON.stringify({ type: "done", report }) + "\n"));
       } catch (err) {
         const message = err instanceof InvalidDomainError || err instanceof Error ? err.message : "Couldn't run the audit.";

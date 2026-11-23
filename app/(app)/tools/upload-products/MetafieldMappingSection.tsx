@@ -134,7 +134,7 @@ export function MetafieldMappingSection({
                           </Button>
                         ))}
                       </ButtonGroup>
-                      <Text as="span" variant="bodySm" tone="subdued">A line break or || in the cell starts the next paragraph or list item. HTML lists in the cell are kept as they are.</Text>
+                      <Text as="span" variant="bodySm" tone="subdued">A line break or a | in the cell starts the next paragraph or list item, e.g. &ldquo;Height 5 cm | Width 3 cm | Weight 50 g&rdquo;. A cell that starts with &ldquo;* &rdquo; becomes a bulleted list. HTML lists in the cell are kept as they are.</Text>
                     </BlockStack>
                   );
                 }

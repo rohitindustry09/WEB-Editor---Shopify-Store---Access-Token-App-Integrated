@@ -20,6 +20,9 @@ export interface ConvertResult {
   filename: string;
   mimeType: string;
   originalSize: number;
+  /** The converted image's pixel size (0 when the file was passed through without being decoded). */
+  width: number;
+  height: number;
 }
 
 export interface WorkerPoolOptions {
@@ -83,6 +86,8 @@ export function runConvertWorkerPool(options: WorkerPoolOptions): WorkerPoolHand
                 filename: message.filename,
                 mimeType: message.mimeType,
                 originalSize: message.originalSize,
+                width: message.width,
+                height: message.height,
               });
             } else if (message.type === "error") {
               onError(message.path, message.message);

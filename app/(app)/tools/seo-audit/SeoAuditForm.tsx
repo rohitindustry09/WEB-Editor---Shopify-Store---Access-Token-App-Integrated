@@ -23,8 +23,10 @@ import {
 } from "@shopify/polaris";
 import { Select } from "@/components/ui/Select";
 import { SearchIcon, CheckCircleIcon, AlertTriangleIcon, XCircleIcon, GlobeIcon } from "@shopify/polaris-icons";
-import { AUDIT_STEPS, DEFAULT_MAX_PAGES, MAX_PAGES_OPTIONS, type AuditStepId } from "@/lib/seoAudit/constants";
+import { AUDIT_STEPS, DEFAULT_MAX_PAGES, MAX_PAGES_OPTIONS, WORKER_OPTIONS, type AuditStepId } from "@/lib/seoAudit/constants";
 import type { AuditEvent } from "@/lib/seoAudit/runAudit";
+import type { CheckpointMeta } from "@/lib/seoAudit/checkpoint";
+import { buildAuditHtml } from "@/lib/seoAudit/htmlReport";
 import type {
   AuditCategory,
   Finding,
@@ -308,38 +310,50 @@ function initialStepStates(): StepStates {
 /** The audit's own live timeline — every step this tool runs, in order, each one showing pending/running/done as the stream reports it. This is the "show all works to the front" piece: nothing here is a guess about what's happening, every state change is a real event from the server. */
 function StepTimeline({ states }: { states: StepStates }) {
   return (
-    <InlineStack gap="400" wrap>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8 }}>
       {AUDIT_STEPS.map((step) => {
         const state = states[step.id];
+        const running = state.status === "running";
+        const done = state.status === "done";
         return (
-          <InlineStack key={step.id} gap="150" blockAlign="center" wrap={false}>
-            {state.status === "running" ? (
-              <Spinner size="small" />
-            ) : state.status === "done" ? (
-              <Icon source={CheckCircleIcon} tone="success" />
-            ) : (
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  background: "var(--p-color-border-secondary)",
-                  display: "inline-block",
-                }}
-              />
-            )}
-            <Text as="span" variant="bodySm" fontWeight={state.status === "running" ? "semibold" : undefined} tone={state.status === "pending" ? "subdued" : undefined}>
-              {step.label}
-            </Text>
-            {state.detail && (
-              <Text as="span" variant="bodySm" tone="subdued">
-                ({state.detail})
+          <div
+            key={step.id}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: "1px solid var(--p-color-border-secondary)",
+              background: running ? "var(--p-color-bg-surface-secondary)" : "transparent",
+              opacity: state.status === "pending" ? 0.6 : 1,
+              minWidth: 0,
+            }}
+          >
+            <span style={{ width: 20, height: 20, flex: "none", display: "grid", placeItems: "center" }}>
+              {running ? (
+                <Spinner size="small" />
+              ) : done ? (
+                <Icon source={CheckCircleIcon} tone="success" />
+              ) : (
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--p-color-border-secondary)" }} />
+              )}
+            </span>
+            <span style={{ minWidth: 0, flex: 1 }}>
+              <Text as="span" variant="bodySm" fontWeight={running ? "semibold" : "regular"}>
+                {step.label}
               </Text>
-            )}
-          </InlineStack>
+              {state.detail && (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  {" "}
+                  · {state.detail}
+                </Text>
+              )}
+            </span>
+          </div>
         );
       })}
-    </InlineStack>
+    </div>
   );
 }
 
@@ -350,15 +364,41 @@ interface CrawlStats {
   skipped: number;
 }
 
-function CrawlStatsRow({ stats, maxPages }: { stats: CrawlStats; maxPages: number }) {
+function StatTile({ label, value, tone }: { label: string; value: string; tone?: "critical" | "caution" | "success" }) {
+  const color = tone === "critical" ? "var(--p-color-text-critical)" : tone === "caution" ? "var(--p-color-text-caution)" : tone === "success" ? "var(--p-color-text-success)" : undefined;
   return (
-    <InlineStack gap="800" wrap>
-      <StatBlock label="Pages crawled" value={stats.crawled.toLocaleString()} />
-      <StatBlock label="Still queued" value={stats.queued.toLocaleString()} />
-      <StatBlock label="Skipped (non-HTML)" value={stats.skipped.toLocaleString()} />
-      <StatBlock label="Errors" value={stats.errors.toLocaleString()} note={stats.errors > 0 ? "check the feed below" : undefined} noteTone={stats.errors > 0 ? "critical" : undefined} />
-      <StatBlock label="Crawl limit" value={maxPages.toLocaleString()} />
-    </InlineStack>
+    <div style={{ padding: "12px 16px", borderRadius: 12, border: "1px solid var(--p-color-border-secondary)", minWidth: 0 }}>
+      <div style={{ fontSize: 12, color: "var(--p-color-text-secondary)", marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 650, lineHeight: 1.1, color, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+    </div>
+  );
+}
+
+function CrawlStatsRow({ stats, total }: { stats: CrawlStats; total: number | null }) {
+  const done = stats.crawled;
+  const percent = total && total > 0 ? Math.min(100, Math.round((done / total) * 100)) : null;
+  return (
+    <BlockStack gap="300">
+      <BlockStack gap="100">
+        <InlineStack align="space-between" blockAlign="center">
+          <Text as="span" variant="bodySm" fontWeight="medium">
+            {total ? `${done.toLocaleString()} of ${total.toLocaleString()} pages` : `${done.toLocaleString()} pages`}
+          </Text>
+          {percent !== null && (
+            <Text as="span" variant="bodySm" tone="subdued">
+              {percent}%
+            </Text>
+          )}
+        </InlineStack>
+        <ProgressBar progress={percent ?? 8} size="small" tone="highlight" />
+      </BlockStack>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+        <StatTile label="Pages crawled" value={stats.crawled.toLocaleString()} tone="success" />
+        <StatTile label="Still queued" value={stats.queued.toLocaleString()} />
+        <StatTile label="Skipped / rate-limited" value={stats.skipped.toLocaleString()} tone={stats.skipped > 0 ? "caution" : undefined} />
+        <StatTile label="Errors" value={stats.errors.toLocaleString()} tone={stats.errors > 0 ? "critical" : undefined} />
+      </div>
+    </BlockStack>
   );
 }
 
@@ -377,22 +417,39 @@ function CrawlFeedItem({ row }: { row: CrawlFeedRow }) {
   const label = getPageLabel(row.url, row.title);
   const icon = row.kind === "crawled" ? CheckCircleIcon : row.kind === "skipped" ? AlertTriangleIcon : XCircleIcon;
   const tone = row.kind === "crawled" ? "success" : row.kind === "skipped" ? "caution" : "critical";
+  const ellipsis = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
   return (
-    <Box padding="200" borderBlockEndWidth="025" borderColor="border-secondary">
-      <InlineStack gap="200" blockAlign="center" wrap={false}>
-        <Icon source={icon} tone={tone} />
-        <BlockStack gap="0">
-          <InlineStack gap="150" blockAlign="baseline">
-            {label.kind && <Text as="span" tone="subdued" variant="bodySm">{label.kind}:</Text>}
-            <Text as="span" variant="bodySm" fontWeight="medium">{label.name}</Text>
-            {row.status !== null && <Text as="span" tone="subdued" variant="bodySm">HTTP {row.status}</Text>}
-          </InlineStack>
-          <Text as="span" tone="subdued" variant="bodySm" breakWord>
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "20px minmax(0, 1fr) auto",
+        alignItems: "center",
+        columnGap: 12,
+        padding: "8px 14px",
+        borderBottom: "1px solid var(--p-color-border-secondary)",
+        textAlign: "left",
+      }}
+    >
+      <Icon source={icon} tone={tone} />
+      <div style={{ minWidth: 0 }}>
+        <div style={ellipsis}>
+          {label.kind && (
+            <Text as="span" tone="subdued" variant="bodySm">
+              {label.kind} ·{" "}
+            </Text>
+          )}
+          <Text as="span" variant="bodySm" fontWeight="medium">
+            {label.name}
+          </Text>
+        </div>
+        <div style={ellipsis} title={row.url}>
+          <Text as="span" tone={row.kind === "crawled" ? "subdued" : tone === "critical" ? "critical" : "caution"} variant="bodySm">
             {row.message ?? row.url}
           </Text>
-        </BlockStack>
-      </InlineStack>
-    </Box>
+        </div>
+      </div>
+      {row.status !== null ? <Badge tone={row.status < 400 ? "success" : "critical"}>{String(row.status)}</Badge> : <span />}
+    </div>
   );
 }
 
@@ -410,13 +467,21 @@ function LiveCrawlFeed({ rows }: { rows: CrawlFeedRow[] }) {
   }
   return (
     <div style={{ maxHeight: 360, overflowY: "auto" }}>
-      <BlockStack gap="0">
-        {rows.map((row) => (
-          <CrawlFeedItem key={row.key} row={row} />
-        ))}
-      </BlockStack>
+      {rows.map((row) => (
+        <CrawlFeedItem key={row.key} row={row} />
+      ))}
     </div>
   );
+}
+
+/** "5 minutes ago" style age of a saved crawl. */
+function savedAgo(iso: string): string {
+  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
 }
 
 type StreamLine = AuditEvent | { type: "done"; report: SeoAuditReport };
@@ -424,6 +489,7 @@ type StreamLine = AuditEvent | { type: "done"; report: SeoAuditReport };
 export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
   const [domain, setDomain] = useState(defaultDomain);
   const [maxPages, setMaxPages] = useState<number>(DEFAULT_MAX_PAGES);
+  const [workers, setWorkers] = useState<number>(0);
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<SeoAuditReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -434,6 +500,41 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
   const [feed, setFeed] = useState<CrawlFeedRow[]>([]);
   const [stats, setStats] = useState<CrawlStats>({ crawled: 0, queued: 0, errors: 0, skipped: 0 });
   const [sitemapInfo, setSitemapInfo] = useState<{ found: boolean; url: string | null; pageCount: number } | null>(null);
+
+  const [saved, setSaved] = useState<CheckpointMeta | null>(null);
+  const [resumedCount, setResumedCount] = useState<number | null>(null);
+
+  // Saved progress for whatever domain is typed (looked up shortly after typing stops, and again after every run).
+  const refreshSaved = async (forDomain: string) => {
+    try {
+      const res = await fetch(`/api/seo-audit/checkpoint?domain=${encodeURIComponent(forDomain)}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { meta: CheckpointMeta | null };
+      setSaved(data.meta);
+    } catch {
+      // no saved-progress hint is shown; the audit itself still works
+    }
+  };
+  useEffect(() => {
+    if (running) return;
+    const timer = setTimeout(() => void refreshSaved(domain), 450);
+    return () => clearTimeout(timer);
+  }, [domain, running]);
+
+  const [liveInfo, setLiveInfo] = useState<{ total: number; errors: string[] } | null>(null);
+
+  const exportHtml = () => {
+    if (!report) return;
+    const blob = new Blob([buildAuditHtml(report)], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `seo-audit-${report.domain.replace(/^https?:\/\//, "").replace(/[^a-z0-9.-]/gi, "-")}.html`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   const abortRef = useRef<AbortController | null>(null);
   // Same "buffer, then flush on a short timer" pattern used for the media
@@ -482,6 +583,12 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
           sitemap: { status: "done", detail: event.found ? `${event.pageCount} URLs` : "none found" },
         }));
         break;
+      case "checkpoint-loaded":
+        setResumedCount(event.cached);
+        break;
+      case "live-store":
+        setLiveInfo({ total: event.total, errors: event.errors });
+        break;
       case "page-queued":
         statsRef.current = { ...statsRef.current, queued: event.queueSize };
         scheduleFlush();
@@ -505,6 +612,13 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
         scheduleFlush();
         break;
       case "page-error":
+        if (event.message.startsWith("Rate limited")) {
+          statsRef.current = { ...statsRef.current, crawled: event.crawledCount, skipped: statsRef.current.skipped + 1 };
+          feedKeyRef.current += 1;
+          feedBufferRef.current.push({ key: `limited-${feedKeyRef.current}`, url: event.url, title: null, status: null, kind: "skipped", message: "Rate-limited by the store, not checked" });
+          scheduleFlush();
+          break;
+        }
         statsRef.current = { ...statsRef.current, crawled: event.crawledCount, errors: statsRef.current.errors + 1 };
         feedKeyRef.current += 1;
         feedBufferRef.current.push({ key: `error-${feedKeyRef.current}`, url: event.url, title: null, status: null, kind: "error", message: event.message });
@@ -536,10 +650,12 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
     setFeed([]);
     setStats({ crawled: 0, queued: 0, errors: 0, skipped: 0 });
     setSitemapInfo(null);
+    setLiveInfo(null);
+    setResumedCount(null);
     setStepStates(initialStepStates());
   };
 
-  const runAudit = async () => {
+  const runAudit = async (resume = false) => {
     setError(null);
     setReport(null);
     resetLiveState();
@@ -550,7 +666,7 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
       const res = await fetch("/api/seo-audit/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ domain, maxPages }),
+        body: JSON.stringify({ domain, maxPages, workers, resume }),
         signal: controller.signal,
       });
       if (!res.body) throw new Error("Couldn't start the audit — no response stream.");
@@ -578,6 +694,7 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
     } finally {
       setRunning(false);
       abortRef.current = null;
+      void refreshSaved(domain);
     }
   };
 
@@ -622,7 +739,8 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
   const activeSeverity: Severity | null =
     filterTab === 1 ? "critical" : filterTab === 2 ? "warning" : filterTab === 3 ? "info" : null;
 
-  const maxPagesOptions = MAX_PAGES_OPTIONS.map((n) => ({ value: String(n), label: `${n} pages` }));
+  const workerOptions = WORKER_OPTIONS.map((n) => ({ value: String(n), label: n === 0 ? "Workers: auto" : n === 1 ? "1 worker" : `${n} workers` }));
+  const maxPagesOptions = MAX_PAGES_OPTIONS.map((n) => ({ value: String(n), label: n === 0 ? "All pages" : `${n} pages` }));
 
   return (
     <Page
@@ -637,9 +755,8 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
             <BlockStack gap="400">
               <SectionHeading title="Run an audit" />
               <Text as="p" tone="subdued">
-                Does a real crawl — starting from the sitemap when there is one, then following every same-origin
-                link it finds on every page it visits, not just the homepage — up to the page limit below. Watch it
-                work in real time: every page fetched, every check run, shows up live as it happens.
+                On your connected store this reads every page straight from Shopify (home, products, collections, pages, articles) and
+                audits each one. Pick &ldquo;All pages&rdquo; for the full store, or a smaller limit for a quicker run. Progress shows live below.
               </Text>
 
               <InlineStack gap="300" blockAlign="end" wrap={false}>
@@ -665,16 +782,44 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
                     disabled={running}
                   />
                 </div>
+                <div style={{ minWidth: 150 }}>
+                  <Select
+                    label="Workers"
+                    labelHidden
+                    options={workerOptions}
+                    value={String(workers)}
+                    onChange={(v) => setWorkers(Number(v))}
+                    disabled={running}
+                  />
+                </div>
                 {running ? (
                   <Button tone="critical" onClick={cancelAudit}>
                     Cancel
                   </Button>
                 ) : (
-                  <Button variant="primary" loading={running} disabled={!domain.trim()} onClick={runAudit}>
-                    Run audit
-                  </Button>
+                  <InlineStack gap="200" wrap={false}>
+                    {saved && (
+                      <Button variant="primary" disabled={!domain.trim()} onClick={() => void runAudit(true)}>
+                        Resume
+                      </Button>
+                    )}
+                    <Button variant={saved ? "secondary" : "primary"} disabled={!domain.trim()} onClick={() => void runAudit(false)}>
+                      {saved ? "Start fresh" : "Run audit"}
+                    </Button>
+                  </InlineStack>
                 )}
               </InlineStack>
+
+              {saved && !running && (
+                <Banner tone="info" title="Saved progress found">
+                  <p>
+                    {saved.pages.toLocaleString()} page{saved.pages === 1 ? "" : "s"} already crawled for {saved.site}
+                    {saved.retryable > 0 ? ` (${saved.retryable.toLocaleString()} will be retried)` : ""}, saved {savedAgo(saved.savedAt)}.
+                    {" "}<strong>Resume</strong> continues from there and only fetches what is missing;{" "}
+                    <strong>Start fresh</strong> deletes it and crawls everything again.
+                  </p>
+                </Banner>
+              )}
 
               {error && (
                 <Banner tone="critical" title="Couldn't run this audit" onDismiss={() => setError(null)}>
@@ -696,9 +841,24 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
 
                 <StepTimeline states={stepStates} />
                 <Divider />
-                <CrawlStatsRow stats={stats} maxPages={maxPages} />
+                <CrawlStatsRow stats={stats} total={liveInfo?.total ?? sitemapInfo?.pageCount ?? (maxPages > 0 ? maxPages : null)} />
 
-                {sitemapInfo && (
+                {resumedCount !== null && (
+                  <Banner tone="success">
+                    <p>Resumed: {resumedCount.toLocaleString()} pages loaded from saved progress. Only the rest is fetched.</p>
+                  </Banner>
+                )}
+
+                {liveInfo && (
+                  <Banner tone={liveInfo.errors.length > 0 ? "warning" : "info"}>
+                    <p>
+                      Live store: <strong>{liveInfo.total.toLocaleString()} pages</strong> found in Shopify (home, products, collections, pages, articles).
+                      {liveInfo.errors.length > 0 ? " Some types could not be read, so this may be low." : ""} Pages are fetched gently so the store does not rate-limit the crawl; large stores take a while.
+                    </p>
+                  </Banner>
+                )}
+
+                {!liveInfo && sitemapInfo && (
                   <Text as="p" tone="subdued" variant="bodySm">
                     {sitemapInfo.found
                       ? `Found a sitemap at ${sitemapInfo.url} listing ${sitemapInfo.pageCount} URLs — crawling those first, then following any further links they lead to.`
@@ -727,19 +887,22 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
                   <SectionHeading
                     title="Summary"
                     action={
-                      <Text as="span" tone="subdued" variant="bodySm">
-                        {new Date(report.generatedAt).toLocaleString()}
-                      </Text>
+                      <InlineStack gap="300" blockAlign="center">
+                        <Text as="span" tone="subdued" variant="bodySm">
+                          {new Date(report.generatedAt).toLocaleString()}
+                        </Text>
+                        <Button onClick={exportHtml}>Export as HTML</Button>
+                      </InlineStack>
                     }
                   />
 
                   <Text as="span" tone="subdued" variant="bodySm">
                     {report.domain} — {report.pagesCrawled.length} page
                     {report.pagesCrawled.length === 1 ? "" : "s"} crawled
-                    {report.usedSitemap ? " (seeded from sitemap.xml, then link-followed)" : " (found entirely by following links — no sitemap found)"}
+                    {report.usedSitemap ? " (seeded from sitemap.xml, then link-followed)" : report.liveStore ? " (page list read from your live Shopify store, then link-followed)" : " (found entirely by following links — no sitemap found)"}
                   </Text>
 
-                  <InlineStack gap="800" wrap>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
                     <StatBlock
                       label="SEO score"
                       value={String(report.overallScore)}
@@ -747,6 +910,7 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
                       noteTone={scoreTone(report.overallScore) === "success" ? "success" : scoreTone(report.overallScore) === "critical" ? "critical" : "subdued"}
                     />
                     <StatBlock label="Pages crawled" value={report.pagesCrawled.length.toLocaleString()} />
+                    {report.liveStore && <StatBlock label="Pages in live store" value={report.liveStore.total.toLocaleString()} />}
                     <StatBlock
                       label="Critical issues"
                       value={report.severityCounts.critical.toLocaleString()}
@@ -754,7 +918,7 @@ export function SeoAuditForm({ defaultDomain }: { defaultDomain: string }) {
                     />
                     <StatBlock label="Warnings" value={report.severityCounts.warning.toLocaleString()} />
                     <StatBlock label="Info notes" value={report.severityCounts.info.toLocaleString()} />
-                  </InlineStack>
+                  </div>
 
                   <BlockStack gap="200">
                     <Text as="span" variant="bodySm" fontWeight="medium" tone="subdued">By category</Text>

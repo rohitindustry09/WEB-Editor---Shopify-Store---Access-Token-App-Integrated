@@ -52,12 +52,25 @@ async function listBatchFiles(dir: string, relativePrefix = ""): Promise<BatchFi
   return files;
 }
 
+/** A folder or file name that can't point anywhere else: no separators, no "..", no control characters. */
+function isPlainName(name: string): boolean {
+  return name.length > 0 && name.length <= 250 && name !== "." && name !== ".." && !/[\\/\u0000-\u001f]/.test(name);
+}
+
+/** A name safe inside a Content-Disposition header: quotes, backslashes and control characters become dashes. */
+const headerSafe = (name: string): string => name.replace(/["\\\u0000-\u001f]/g, "-");
+
 export async function GET(request: Request) {
   const denied = await guardApi(request);
   if (denied) return denied;
   const { searchParams } = new URL(request.url);
   const batchName = searchParams.get("batch")?.trim();
   if (!batchName) return new Response("Missing ?batch=.", { status: 400 });
+  // The folder name goes into a file path, so only plain names are accepted — never "..", slashes or other path tricks.
+  if (!isPlainName(batchName)) return new Response("Invalid batch name.", { status: 400 });
+  // The name the download is saved as (the folder name also carries the conversion settings, which isn't wanted in a filename).
+  const requestedName = searchParams.get("name")?.trim() ?? "";
+  const downloadName = headerSafe(isPlainName(requestedName) ? requestedName : batchName);
 
   const batchDir = path.join(UPLOADS_ROOT, batchName);
   const files = await listBatchFiles(batchDir);
@@ -97,7 +110,7 @@ export async function GET(request: Request) {
   return new Response(stream, {
     headers: {
       "Content-Type": "application/zip",
-      "Content-Disposition": `attachment; filename="${batchName}-converted.zip"`,
+      "Content-Disposition": `attachment; filename="${downloadName}-converted.zip"`,
     },
   });
 }

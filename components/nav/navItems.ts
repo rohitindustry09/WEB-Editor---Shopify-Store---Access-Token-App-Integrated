@@ -24,6 +24,7 @@ import {
   InventoryIcon,
   CollectionIcon,
   LinkIcon,
+  AppsIcon,
 } from "@shopify/polaris-icons";
 
 type IconSource = IconProps["source"];
@@ -109,6 +110,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { url: "/tools/store-scraper", label: "Store scraper", icon: StoreIcon },
       { url: "/tools/upload-products", label: "Upload Products & Update", icon: ImportIcon },
       { url: "/tools/store-compare", label: "Store compare", icon: ExchangeIcon },
+      { url: "/tools/metaobject-builder", label: "Metaobject & metafield builder", icon: AppsIcon },
     ],
   },
   {

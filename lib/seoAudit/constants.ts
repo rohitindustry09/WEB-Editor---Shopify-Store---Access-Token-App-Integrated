@@ -9,9 +9,14 @@
 // bounded: an unbounded crawl of a real store (thousands of product/variant
 // URLs) would never finish and would hammer the target site, so the UI
 // lets the user pick a ceiling up to this hard limit.
-export const MAX_PAGES_LIMIT = 500;
-export const DEFAULT_MAX_PAGES = 150;
-export const MAX_PAGES_OPTIONS = [50, 150, 300, 500] as const;
+export const MAX_PAGES_LIMIT = 5000;
+export const DEFAULT_MAX_PAGES = 0;
+/** 0 means "every page": for the connected store that is its full live page count, otherwise the crawl limit. */
+export const MAX_PAGES_OPTIONS = [0, 50, 150, 300, 500, 1000, 2000, 5000] as const;
+
+/** Parallel workers for the crawl. 0 = automatic (10 on the connected store, 3 on other sites). */
+export const WORKER_OPTIONS = [0, 1, 2, 4, 6, 10, 16, 24] as const;
+export const MAX_WORKERS = 24;
 
 /** Every step this audit runs, in order — the live dashboard's timeline is driven directly off this list plus the `step-start`/`step-done` events emitted as each one runs. */
 export const AUDIT_STEPS = [

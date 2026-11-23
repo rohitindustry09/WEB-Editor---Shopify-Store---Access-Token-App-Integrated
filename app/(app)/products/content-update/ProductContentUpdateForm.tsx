@@ -219,16 +219,30 @@ export function ProductContentUpdateForm({ shopDomain }: { shopDomain: string })
       const fieldSummary = (Object.entries(group.fields) as [UpdatableField, string][])
         .map(([key, value]) => `${FIELD_LABEL[key]}: ${truncate(value, 60)}`)
         .join(" | ");
+      // Always led by the SKU from the file, so every row can be traced back to it, found or not.
       if (group.products.length === 0) {
-        return [[group.identifier, fieldSummary, ""]];
+        return [[group.identifier, "", "", "Not found in store", fieldSummary, ""]];
       }
-      return group.products.map((product) => [
-        product.title,
-        fieldSummary,
-        shopDomain ? `https://${shopDomain}/admin/products/${idFromGid(product.id)}` : "",
-      ]);
+      const shared = group.products.length > 1;
+      return group.products.map((product) => {
+        const result = excluded[product.id]
+          ? "Left out by you"
+          : alreadyMatches(product, group.fields)
+            ? "Already up to date"
+            : shared
+              ? `Will update (shared SKU, ${group.products.length} products)`
+              : "Will update";
+        return [
+          group.identifier,
+          product.title,
+          idFromGid(product.id),
+          result,
+          fieldSummary,
+          shopDomain ? `https://${shopDomain}/admin/products/${idFromGid(product.id)}` : "",
+        ];
+      });
     });
-    const csv = buildCsv(["Title or SKU", "Fields to update", "Product link"], exportRows);
+    const csv = buildCsv(["SKU", "Product title", "Product ID", "Result", "Fields to update", "Product link"], exportRows);
     downloadCsv(csv, `product-content-update-${visibleTabLabel}.csv`);
   };
 

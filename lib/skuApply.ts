@@ -122,7 +122,7 @@ function parseJson(value: string): unknown {
 
 /**
  * Rich text metafields only accept Shopify's JSON document format — plain text is rejected, which leaves the field empty.
- * HTML keeps its lists, bold and italic; plain text is split on line breaks or `||` and saved in the chosen layout.
+ * HTML keeps its lists, bold and italic; plain text is split on line breaks or `|` and saved in the chosen layout.
  */
 function toRichTextDocument(value: string, format: RichTextFormat): string {
   if (value.startsWith("{")) {

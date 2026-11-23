@@ -1,6 +1,10 @@
 import * as UTIF from "utif2";
 
-export type ImageFormat = "original" | "auto" | "image/jpeg" | "image/png" | "image/webp";
+/**
+ * "image/jpeg" and "image/jpg" are the same JPEG encoding; they differ only in the file extension written
+ * (.jpeg or .jpg). "image/jpg" is an internal choice for the dropdown, never sent anywhere as a MIME type.
+ */
+export type ImageFormat = "original" | "auto" | "image/jpeg" | "image/jpg" | "image/png" | "image/webp";
 
 export interface ConversionSettings {
   format: ImageFormat;
@@ -12,9 +16,77 @@ export interface ConversionSettings {
 }
 
 export const MEGAPIXEL_LIMIT = 25_000_000;
+
+/**
+ * The size that keeps the aspect ratio and never goes over the megapixel limit. Both sides are rounded DOWN, so the
+ * result can't land a few pixels over the cap the way rounding to nearest could.
+ */
+export function fitWithinMegapixels(width: number, height: number, limit: number = MEGAPIXEL_LIMIT): { width: number; height: number } {
+  if (width * height <= limit) return { width, height };
+  const scale = Math.sqrt(limit / (width * height));
+  let fitWidth = Math.max(1, Math.floor(width * scale));
+  let fitHeight = Math.max(1, Math.floor(height * scale));
+  // Guard against floating-point edge cases: trim the longer side until it is certainly within the limit.
+  while (fitWidth * fitHeight > limit && (fitWidth > 1 || fitHeight > 1)) {
+    if (fitWidth >= fitHeight) fitWidth -= 1;
+    else fitHeight -= 1;
+  }
+  return { width: fitWidth, height: fitHeight };
+}
+
+const HEADER_BYTES = 512 * 1024;
+
+/**
+ * An image's pixel size read from its file header (JPEG, PNG or WebP) — without decoding it, which for a huge image
+ * is the expensive, memory-hungry part. Null when the format isn't recognised or the header isn't in the first 512 KB.
+ */
+export async function readImageSize(blob: Blob): Promise<{ width: number; height: number } | null> {
+  const bytes = new Uint8Array(await blob.slice(0, HEADER_BYTES).arrayBuffer());
+  const view = new DataView(bytes.buffer);
+  // PNG: signature, then the IHDR chunk holds width and height as big-endian 32-bit numbers.
+  if (bytes.length >= 24 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return { width: view.getUint32(16), height: view.getUint32(20) };
+  }
+  // JPEG: walk the segments until a start-of-frame marker, which holds height then width.
+  if (bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = bytes[offset + 1];
+      if (marker === 0xff) {
+        offset += 1;
+        continue;
+      }
+      const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      if (isFrame) return { width: view.getUint16(offset + 7), height: view.getUint16(offset + 5) };
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        offset += 2;
+        continue;
+      }
+      offset += 2 + view.getUint16(offset + 2);
+    }
+    return null;
+  }
+  // WebP: a RIFF container whose first chunk is VP8X (extended), VP8L (lossless) or VP8 (lossy).
+  if (bytes.length >= 30 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45) {
+    const kind = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
+    if (kind === "VP8X") return { width: 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)), height: 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16)) };
+    if (kind === "VP8L") {
+      const bits = view.getUint32(21, true);
+      return { width: 1 + (bits & 0x3fff), height: 1 + ((bits >> 14) & 0x3fff) };
+    }
+    if (kind === "VP8 ") return { width: view.getUint16(26, true) & 0x3fff, height: view.getUint16(28, true) & 0x3fff };
+  }
+  return null;
+}
+/** An undecodable file bigger than this is refused (not passed through) when the megapixel cap is on, because it might be over the cap. */
+const UNVERIFIED_PASSTHROUGH_MAX_BYTES = 8 * 1024 * 1024;
 const MIN_QUALITY = 0.35;
-const QUALITY_STEP = 0.12;
-const MAX_SIZE_ATTEMPTS = 6;
+/** How many in-between qualities are tried when looking for the best one under the size cap. */
+const SIZE_SEARCH_STEPS = 3;
 
 export interface ProcessedImage {
   blob: Blob;
@@ -35,6 +107,17 @@ const EXTENSION_FOR_MIME: Record<string, string> = {
 // "image/tiff" itself) falls back to PNG once we've had to decode/redraw.
 const CANVAS_ENCODABLE_MIME = new Set(["image/png", "image/jpeg", "image/webp"]);
 
+/**
+ * The extension for the output file. The explicit JPEG choices decide it (JPG → .jpg, JPEG → .jpeg); when the
+ * format was not chosen explicitly a JPEG keeps the extension style the source file already had.
+ */
+function extensionFor(mime: string, format: ImageFormat, sourceName: string): string {
+  if (mime !== "image/jpeg") return EXTENSION_FOR_MIME[mime] ?? "img";
+  if (format === "image/jpg") return "jpg";
+  if (format === "image/jpeg") return "jpeg";
+  return /\.jpeg$/i.test(sourceName) ? "jpeg" : "jpg";
+}
+
 function isTiff(file: { filename: string; mimeType: string }): boolean {
   return file.mimeType === "image/tiff" || /\.tiff?$/i.test(file.filename);
 }
@@ -54,6 +137,28 @@ async function decodeTiffToImageBitmap(blob: Blob): Promise<ImageBitmap> {
 async function decodeBitmap(file: { blob: Blob; filename: string; mimeType: string }): Promise<ImageBitmap> {
   if (isTiff(file)) return decodeTiffToImageBitmap(file.blob);
   return createImageBitmap(file.blob);
+}
+
+/**
+ * Decodes an image, with a way out for very large ones: a full-size decode of a huge photo can fail (it needs hundreds
+ * of megabytes), but the browser can decode it straight to a smaller size. So when the normal decode fails and the
+ * header says the image is over the megapixel limit, it is decoded directly at the size it will be saved at.
+ */
+async function decodeForSettings(file: { blob: Blob; filename: string; mimeType: string }, settings: ConversionSettings): Promise<ImageBitmap | null> {
+  try {
+    return await decodeBitmap(file);
+  } catch {
+    // fall through to the downscaled decode
+  }
+  if (!settings.resizeOverMegapixels || isTiff(file)) return null;
+  const size = await readImageSize(file.blob).catch(() => null);
+  if (!size || size.width * size.height <= MEGAPIXEL_LIMIT) return null;
+  const target = fitWithinMegapixels(size.width, size.height);
+  try {
+    return await createImageBitmap(file.blob, { resizeWidth: target.width, resizeHeight: target.height, resizeQuality: "high" });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -98,6 +203,21 @@ function drawResized(source: CanvasImageSource, sourceWidth: number, sourceHeigh
   return canvas;
 }
 
+/**
+ * JPEG has no transparency, and a canvas encodes transparent pixels as black — a cut-out product on a clear
+ * background would come out on black. Paint the image onto white first, which is what a white-background
+ * product photo is expected to look like.
+ */
+function flattenOnWhite(source: OffscreenCanvas): OffscreenCanvas {
+  const flat = new OffscreenCanvas(source.width, source.height);
+  const ctx = flat.getContext("2d");
+  if (!ctx) return source;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, flat.width, flat.height);
+  ctx.drawImage(source, 0, 0);
+  return flat;
+}
+
 function canvasToBlob(canvas: OffscreenCanvas, mime: string, quality: number): Promise<Blob> {
   return canvas.convertToBlob({ type: mime, quality: mime === "image/png" ? undefined : quality });
 }
@@ -105,6 +225,7 @@ function canvasToBlob(canvas: OffscreenCanvas, mime: string, quality: number): P
 function formatLabel(format: ImageFormat): string {
   if (format === "image/webp") return "WebP";
   if (format === "image/jpeg") return "JPEG";
+  if (format === "image/jpg") return "JPG";
   if (format === "image/png") return "PNG";
   if (format === "auto") return "Auto (PNG if transparent, else WebP)";
   return format;
@@ -154,11 +275,14 @@ export async function processImage(
     };
   }
 
+  const decoded = await decodeForSettings(file, settings);
   let bitmap: ImageBitmap;
-  try {
-    bitmap = await decodeBitmap(file);
-  } catch {
-    if (settings.format === "original" && !settings.customResize) {
+  if (decoded) {
+    bitmap = decoded;
+  } else {
+    // A file this big can't be checked against the limit, so it must not slip through as if it had been (a small one can't be over it).
+    const couldBeOversize = settings.resizeOverMegapixels && file.blob.size > UNVERIFIED_PASSTHROUGH_MAX_BYTES;
+    if (settings.format === "original" && !settings.customResize && !couldBeOversize) {
       // Can't decode this format at all (an unusual TIFF variant, a RAW/PSD
       // export, etc.), but nothing was actually asked of it beyond a
       // possible resize — pass it through unresized rather than failing.
@@ -174,8 +298,10 @@ export async function processImage(
     throw new Error(
       settings.customResize
         ? `"${file.filename}" can't be decoded, so it can't be resized.`
-        : `"${file.filename}" can't be decoded, so it can't be converted to ${formatLabel(settings.format)}. ` +
-          `Set the format to "Keep original" for this file instead.`,
+        : couldBeOversize
+          ? `"${file.filename}" is too large for this browser to open, so it couldn't be checked against the ${MEGAPIXEL_LIMIT / 1_000_000} megapixel limit and was not converted. Resize it first.`
+          : `"${file.filename}" can't be decoded, so it can't be converted to ${formatLabel(settings.format)}. ` +
+            `Set the format to "Keep original" for this file instead.`,
     );
   }
 
@@ -183,9 +309,7 @@ export async function processImage(
   let height = bitmap.height;
 
   if (settings.resizeOverMegapixels && width * height > MEGAPIXEL_LIMIT) {
-    const scale = Math.sqrt(MEGAPIXEL_LIMIT / (width * height));
-    width = Math.max(1, Math.round(width * scale));
-    height = Math.max(1, Math.round(height * scale));
+    ({ width, height } = fitWithinMegapixels(width, height));
   }
 
   // Custom resize is an explicit exact-size request — it wins over whatever
@@ -202,7 +326,9 @@ export async function processImage(
         ? bitmapHasTransparency(bitmap)
           ? "image/png"
           : "image/webp"
-        : settings.format;
+        : settings.format === "image/jpg"
+          ? "image/jpeg"
+          : settings.format;
   const noConversionNeeded =
     settings.format === "original" && width === bitmap.width && height === bitmap.height && alreadyWithinSizeCap;
   if (noConversionNeeded) {
@@ -222,22 +348,37 @@ export async function processImage(
   // lossless PNG for "keep original" rather than mislabeling the output.
   const targetMime = CANVAS_ENCODABLE_MIME.has(requestedMime) ? requestedMime : "image/png";
 
-  const canvas = drawResized(bitmap, bitmap.width, bitmap.height, width, height);
+  const drawn = drawResized(bitmap, bitmap.width, bitmap.height, width, height);
   bitmap.close();
+  const canvas = targetMime === "image/jpeg" ? flattenOnWhite(drawn) : drawn;
 
-  let quality = settings.quality;
-  let outputBlob = await canvasToBlob(canvas, targetMime, quality);
+  let outputBlob = await canvasToBlob(canvas, targetMime, settings.quality);
 
-  if (settings.maxSizeBytes && targetMime !== "image/png") {
-    let attempts = 0;
-    while (outputBlob.size > settings.maxSizeBytes && quality > MIN_QUALITY && attempts < MAX_SIZE_ATTEMPTS) {
-      quality -= QUALITY_STEP;
-      outputBlob = await canvasToBlob(canvas, targetMime, quality);
-      attempts++;
+  // Meeting a size cap. Every encode of a large picture takes seconds, so the number of encodes matters more than
+  // anything else here: try the lowest allowed quality once — if even that is over the cap, no quality in between can
+  // meet it and the search stops straight away (the old stepping loop re-encoded six more times for nothing). Otherwise
+  // a short binary search lands on the highest quality that fits.
+  const cap = settings.maxSizeBytes;
+  if (cap && targetMime !== "image/png" && outputBlob.size > cap) {
+    const floorBlob = await canvasToBlob(canvas, targetMime, MIN_QUALITY);
+    outputBlob = floorBlob;
+    if (floorBlob.size <= cap) {
+      let low = MIN_QUALITY;
+      let high = settings.quality;
+      for (let step = 0; step < SIZE_SEARCH_STEPS; step++) {
+        const mid = (low + high) / 2;
+        const candidate = await canvasToBlob(canvas, targetMime, mid);
+        if (candidate.size <= cap) {
+          outputBlob = candidate;
+          low = mid;
+        } else {
+          high = mid;
+        }
+      }
     }
   }
 
-  const ext = EXTENSION_FOR_MIME[targetMime] ?? "img";
+  const ext = extensionFor(targetMime, settings.format, file.filename);
   const baseName = file.filename.replace(/\.[^.]+$/, "");
 
   return {

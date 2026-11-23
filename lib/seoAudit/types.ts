@@ -93,7 +93,21 @@ export interface CategoryScore {
   info: number;
 }
 
+/** The connected store's real public pages, read from Shopify. */
+export interface LiveStoreInfo {
+  primaryDomain: string;
+  host: string;
+  shop: string;
+  urls: string[];
+  counts: { home: number; products: number; collections: number; pages: number; articles: number };
+  total: number;
+  /** Resources that couldn't be read (usually a missing read scope) — the total is then a floor, not the full count. */
+  errors: string[];
+}
+
 export interface SeoAuditReport {
+  /** Present when the audit was run on the connected store: its real page totals. */
+  liveStore?: Omit<LiveStoreInfo, "urls">;
   domain: string;
   pagesCrawled: string[];
   /** Each crawled page's own <title>, keyed by URL â€” null for a page that had none, absent for a URL that wasn't successfully parsed as HTML (a fetch failure or a non-HTML sitemap entry). Lets the UI show a real page name instead of just the URL. */

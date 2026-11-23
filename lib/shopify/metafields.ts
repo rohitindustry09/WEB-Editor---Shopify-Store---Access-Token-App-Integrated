@@ -125,6 +125,11 @@ const METAFIELD_REFERENCE_FRAGMENT = `
   ... on ProductVariant { id title image { url } product { title } }
 `;
 
+/** A list metafield can hold more references than one request returns, so the rest are read page by page. */
+const REFERENCES_PAGE_SIZE = 50;
+/** Shopify caps a list metafield at 128 items; this is only a guard against a runaway loop. */
+const MAX_REFERENCE_PAGES = 10;
+
 const PRODUCT_METAFIELD_VALUE_QUERY = `
   query ProductMetafieldValue($id: ID!, $namespace: String!, $key: String!) {
     product(id: $id) {
@@ -133,7 +138,17 @@ const PRODUCT_METAFIELD_VALUE_QUERY = `
         value
         type
         reference { ${METAFIELD_REFERENCE_FRAGMENT} }
-        references(first: 50) { nodes { ${METAFIELD_REFERENCE_FRAGMENT} } }
+        references(first: ${REFERENCES_PAGE_SIZE}) { pageInfo { hasNextPage endCursor } nodes { ${METAFIELD_REFERENCE_FRAGMENT} } }
+      }
+    }
+  }
+`;
+
+const MORE_REFERENCES_QUERY = `
+  query ProductMetafieldMoreReferences($id: ID!, $namespace: String!, $key: String!, $after: String!) {
+    product(id: $id) {
+      metafield(namespace: $namespace, key: $key) {
+        references(first: ${REFERENCES_PAGE_SIZE}, after: $after) { pageInfo { hasNextPage endCursor } nodes { ${METAFIELD_REFERENCE_FRAGMENT} } }
       }
     }
   }
@@ -183,7 +198,7 @@ export async function getProductMetafieldValue(
         value: string;
         type: string;
         reference: MetafieldReferenceNode | null;
-        references: { nodes: MetafieldReferenceNode[] } | null;
+        references: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: MetafieldReferenceNode[] } | null;
       } | null;
     } | null;
   }>(PRODUCT_METAFIELD_VALUE_QUERY, { id: productId, namespace, key });
@@ -191,11 +206,21 @@ export async function getProductMetafieldValue(
   const mf = data.product?.metafield;
   if (!mf) return null;
 
-  const referencedItems = mf.references
-    ? mf.references.nodes.map(toReferenceItem)
-    : mf.reference
-      ? [toReferenceItem(mf.reference)]
-      : [];
+  let referencedItems: MetafieldReferenceItem[] = [];
+  if (mf.references) {
+    const nodes = [...mf.references.nodes];
+    let { hasNextPage, endCursor } = mf.references.pageInfo;
+    for (let page = 1; hasNextPage && endCursor && page < MAX_REFERENCE_PAGES; page++) {
+      const more: { product: { metafield: { references: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: MetafieldReferenceNode[] } | null } | null } | null } = await shopifyGraphQL(MORE_REFERENCES_QUERY, { id: productId, namespace, key, after: endCursor });
+      const next = more.product?.metafield?.references;
+      if (!next) break;
+      nodes.push(...next.nodes);
+      ({ hasNextPage, endCursor } = next.pageInfo);
+    }
+    referencedItems = nodes.map(toReferenceItem);
+  } else if (mf.reference) {
+    referencedItems = [toReferenceItem(mf.reference)];
+  }
 
   return { id: mf.id, value: mf.value, type: mf.type, referencedItems };
 }

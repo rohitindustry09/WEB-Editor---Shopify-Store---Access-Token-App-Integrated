@@ -1,8 +1,8 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
-import { Box, BlockStack, InlineStack, Text, TextField, Badge, Icon } from "@shopify/polaris";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useMemo, useState } from "react";
+import { Banner, Box, BlockStack, InlineStack, Text, TextField, Badge, Icon } from "@shopify/polaris";
 import { ChevronRightIcon, StoreIcon } from "@shopify/polaris-icons";
 import { useOnboarding } from "@/components/onboarding/OnboardingContext";
 
@@ -13,9 +13,30 @@ const GREEN_TINT = "var(--wz-tint)";
 /** The Continue button is a dark fill with white text in both themes. */
 const GREEN_SOLID = "#004c3f";
 
+/** Why the last "Connect with Shopify" attempt failed, passed back in the address by the OAuth routes. */
+function OAuthError() {
+  const message = useSearchParams().get("oauth_error");
+  return message ? <Banner tone="critical" title="Couldn't connect with Shopify"><p>{message}</p></Banner> : null;
+}
+
+const OAUTH_BUTTON = {
+  width: "100%",
+  boxSizing: "border-box",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.5rem",
+  background: "transparent",
+  borderRadius: 10,
+  padding: "0.7rem 1.1rem",
+  fontSize: 14,
+  fontWeight: 600,
+  textDecoration: "none",
+} as const;
+
 export default function ConnectStorePage() {
   const router = useRouter();
-  const { storeName, setStoreName } = useOnboarding();
+  const { storeName, setStoreName, oauthReady } = useOnboarding();
   const [touched, setTouched] = useState(false);
 
   const isValid = useMemo(
@@ -25,6 +46,11 @@ export default function ConnectStorePage() {
 
   return (
     <BlockStack gap="500" inlineAlign="center">
+      <div style={{ width: "100%" }}>
+        <Suspense fallback={null}>
+          <OAuthError />
+        </Suspense>
+      </div>
       <BlockStack gap="150" inlineAlign="center">
         <Text as="h1" variant="headingLg" alignment="center">What&apos;s your store&apos;s address?</Text>
         <Text as="p" tone="subdued" alignment="center">
@@ -136,6 +162,35 @@ export default function ConnectStorePage() {
             </Box>
           </BlockStack>
         </form>
+
+        <Box paddingBlockStart="400">
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <div style={{ flex: 1, height: 1, background: "var(--p-color-border)" }} />
+            <Text as="span" variant="bodySm" tone="subdued">or, without an access token</Text>
+            <div style={{ flex: 1, height: 1, background: "var(--p-color-border)" }} />
+          </div>
+          <Box paddingBlockStart="300">
+            <BlockStack gap="150" inlineAlign="center">
+              {/* A real link, not router navigation: it ends at Shopify's website, so the browser must leave the app. */}
+              {isValid && oauthReady ? (
+                <a href={`/api/auth/shopify/start?shop=${encodeURIComponent(storeName)}`} style={{ ...OAUTH_BUTTON, color: GREEN_DARK, border: `1.5px solid ${GREEN}`, cursor: "pointer" }}>
+                  <Icon source={StoreIcon} tone="inherit" />
+                  Connect with Shopify
+                </a>
+              ) : (
+                <span aria-disabled="true" style={{ ...OAUTH_BUTTON, color: "var(--p-color-text-disabled)", border: "1.5px solid var(--p-color-border)", cursor: "not-allowed" }}>
+                  <Icon source={StoreIcon} tone="inherit" />
+                  Connect with Shopify
+                </span>
+              )}
+              <Text as="span" variant="bodySm" tone="subdued" alignment="center">
+                {oauthReady
+                  ? "You approve the app on Shopify — nothing to copy or paste. For stores that can't create a custom app with an access token."
+                  : "Not set up on this server yet: it needs SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET (see the setup steps)."}
+              </Text>
+            </BlockStack>
+          </Box>
+        </Box>
       </div>
     </BlockStack>
   );
