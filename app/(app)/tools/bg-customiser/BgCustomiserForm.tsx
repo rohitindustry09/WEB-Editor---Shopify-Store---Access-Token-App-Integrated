@@ -78,6 +78,7 @@ import {
 } from "./backgroundEditorState";
 import { loadPersistedSettings, savePersistedSettings, toPersistableBackgroundState } from "./persistedSettings";
 import { computeZipSignature } from "./zipSignature";
+import { DriveLinkImport } from "./DriveLinkImport";
 import { getJobMeta, saveJobMeta, saveResult, loadSavedResults, clearJob, type JobMeta } from "./progressStore";
 import { runCompositeWorkerPool, getDefaultWorkerCount, MAX_WORKERS } from "./workerPool";
 import { ServerSaveQueue, uploadImageToServer } from "./serverSaveQueue";
@@ -1336,6 +1337,7 @@ export function BgCustomiserForm() {
               )}
 
               {!zipData ? (
+                <BlockStack gap="300">
                 <DropZone
                   accept=".zip,application/zip"
                   type="file"
@@ -1353,6 +1355,8 @@ export function BgCustomiserForm() {
                     <DropZone.FileUpload actionTitle="Add zip file" actionHint="or drop a .zip of product photo folders" />
                   )}
                 </DropZone>
+                <DriveLinkImport disabled={loadingZip} onFile={(file) => void handleZipDrop([file])} />
+                </BlockStack>
               ) : (
                 <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
                   <InlineStack gap="300" blockAlign="center" wrap>
