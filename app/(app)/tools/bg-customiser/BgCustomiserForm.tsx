@@ -81,6 +81,7 @@ import {
 import { loadPersistedSettings, savePersistedSettings, toPersistableBackgroundState } from "./persistedSettings";
 import { computeZipSignature } from "./zipSignature";
 import { DriveLinkImport } from "./DriveLinkImport";
+import { clearSavedLogo, loadSavedLogo, saveLogo } from "./logoStore";
 import { getJobMeta, saveJobMeta, saveResult, loadSavedResults, clearJob, type JobMeta } from "./progressStore";
 import { runCompositeWorkerPool, getDefaultWorkerCount, MAX_WORKERS } from "./workerPool";
 import { ServerSaveQueue, uploadImageToServer } from "./serverSaveQueue";
@@ -236,6 +237,10 @@ export function BgCustomiserForm() {
   // ---- Logo overlay (stamped on top of every processed image, regardless of background mode) ----
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
+  // True while the logo shown is also kept in this browser for next time (see logoStore.ts).
+  const [logoSaved, setLogoSaved] = useState(false);
+  // Set once the user adds or removes a logo themselves, so a slow restore from storage can't overwrite their choice.
+  const logoTouchedRef = useRef(false);
   const [logoPosition, setLogoPosition] = useState<LogoPosition>("bottom-right");
   const [logoCustomX, setLogoCustomX] = useState(50);
   const [logoCustomY, setLogoCustomY] = useState(50);
@@ -406,6 +411,22 @@ export function BgCustomiserForm() {
     const urls = objectUrlsRef.current;
     return () => {
       for (const url of urls) URL.revokeObjectURL(url);
+    };
+  }, []);
+
+  // The logo from the last visit comes back selected, so it is stamped on every image without re-adding it.
+  useEffect(() => {
+    let cancelled = false;
+    loadSavedLogo().then((file) => {
+      if (cancelled || !file || logoTouchedRef.current) return;
+      const url = URL.createObjectURL(file);
+      objectUrlsRef.current.add(url);
+      setLogoFile(file);
+      setLogoPreviewUrl(url);
+      setLogoSaved(true);
+    });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -689,10 +710,6 @@ export function BgCustomiserForm() {
     }
   };
 
-  const handleDiscardProgress = () => {
-    if (zipSignature) void clearJob(zipSignature);
-    setSavedProgress(null);
-  };
 
   const handleBgImageDropA = (file: File) => {
     patchBgStateA({ bgImageFile: file, bgImagePreviewUrl: trackUrl(URL.createObjectURL(file)) });
@@ -705,8 +722,19 @@ export function BgCustomiserForm() {
   const handleLogoDrop = (accepted: File[]) => {
     const file = accepted.find((f) => isImageFilename(f.name));
     if (!file) return;
+    logoTouchedRef.current = true;
     setLogoFile(file);
     setLogoPreviewUrl(trackUrl(URL.createObjectURL(file)));
+    setLogoSaved(false);
+    void saveLogo(file).then(setLogoSaved);
+  };
+
+  const handleLogoRemove = () => {
+    logoTouchedRef.current = true;
+    setLogoFile(null);
+    setLogoPreviewUrl(null);
+    setLogoSaved(false);
+    void clearSavedLogo();
   };
 
   /** The eyedropper: maps a click on the displayed (possibly scaled-down) sample image back to that image's own natural pixel coordinates, then samples the color there and hands it to `onPick`. Shared by the primary Replace-color eyedropper and the secondary column's own. */
@@ -1252,6 +1280,42 @@ export function BgCustomiserForm() {
     }
   };
 
+  // The saved-progress banner's "Start fresh" asks first, because it deletes the files saved for this zip so far.
+  const [freshOpen, setFreshOpen] = useState(false);
+  const [freshBusy, setFreshBusy] = useState(false);
+  const [freshError, setFreshError] = useState<string | null>(null);
+
+  /**
+   * Deletes the older files for this zip — the processed images saved on the server and the progress kept in this browser —
+   * so the run starts from nothing. A zip downloaded from Drive stays on the server (it has its own "Delete from server"
+   * button), and the logo and settings are untouched.
+   */
+  const startFresh = async () => {
+    setFreshBusy(true);
+    setFreshError(null);
+    const failed: string[] = [];
+    try {
+      const response = await fetch(`/api/bg-customiser/site?site=${encodeURIComponent(siteFolderName)}`, { method: "DELETE" });
+      if (!response.ok) failed.push("the results saved on the server");
+    } catch {
+      failed.push("the results saved on the server");
+    }
+    if (zipSignature) {
+      try {
+        await clearJob(zipSignature);
+      } catch {
+        failed.push("the saved progress");
+      }
+    }
+    setFreshBusy(false);
+    if (failed.length > 0) {
+      setFreshError(`Couldn't delete ${failed.join(" and ")}. Nothing was started fresh — try again.`);
+      return;
+    }
+    setFreshOpen(false);
+    setSavedProgress(null);
+  };
+
   const clearZip = () => {
     setZipData(null);
     setFiles(new Map());
@@ -1284,6 +1348,29 @@ export function BgCustomiserForm() {
         },
       ]}
     >
+      <Modal
+        open={freshOpen}
+        onClose={() => !freshBusy && setFreshOpen(false)}
+        title="Start fresh?"
+        primaryAction={{ content: "Delete files & start fresh", destructive: true, loading: freshBusy, onAction: () => void startFresh() }}
+        secondaryActions={[{ content: "Cancel", disabled: freshBusy, onAction: () => setFreshOpen(false) }]}
+      >
+        <Modal.Section>
+          <BlockStack gap="300">
+            <Text as="p">Starting fresh deletes the older files for this zip:</Text>
+            <BlockStack gap="100">
+              <Text as="p">• the processed images saved on the server for <b>{siteFolderName}</b> (all conversion variants)</Text>
+              <Text as="p">• the saved progress kept in this browser</Text>
+            </BlockStack>
+            <Text as="p" tone="subdued">
+              The zip itself, your logo and your settings are kept. A zip downloaded from Drive stays on the server until you press
+              &ldquo;Delete from server&rdquo;. Deleted files can&apos;t be brought back.
+            </Text>
+            {freshError && <Banner tone="critical"><p>{freshError}</p></Banner>}
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
+
       <Modal open={howItWorksOpen} onClose={() => setHowItWorksOpen(false)} title="How the background customiser works">
         <Modal.Section>
           <BlockStack gap="400">
@@ -1504,15 +1591,15 @@ export function BgCustomiserForm() {
 
                     <div style={{ height: "100%", display: "flex", flexDirection: "column", gap: 8 }}>
                       <InlineStack align="space-between" blockAlign="center">
-                        <Text as="span" variant="bodySm" fontWeight="medium">Logo</Text>
+                        <InlineStack gap="200" blockAlign="center">
+                          <Text as="span" variant="bodySm" fontWeight="medium">Logo</Text>
+                          {logoFile && logoSaved && <Badge tone="success">Remembered</Badge>}
+                        </InlineStack>
                         {logoFile && (
                           <Button
                             size="micro"
                             icon={DeleteIcon}
-                            onClick={() => {
-                              setLogoFile(null);
-                              setLogoPreviewUrl(null);
-                            }}
+                            onClick={handleLogoRemove}
                           >
                             Remove
                           </Button>
@@ -2002,14 +2089,14 @@ export function BgCustomiserForm() {
                         <p>
                           {`${savedProgress.doneCount.toLocaleString()} of ${savedProgress.totalCount.toLocaleString()} images `}
                           {`(${Math.round((savedProgress.doneCount / savedProgress.totalCount) * 100)}%) were already updated before this was last `}
-                          interrupted — resume to pick up from there, or start fresh to redo everything. Resuming keeps
+                          interrupted — resume to pick up from there, or start fresh to delete the older files and redo everything. Resuming keeps
                           already-processed images as-is even if settings changed since then.
                         </p>
                         <InlineStack gap="200">
                           <Button onClick={() => void handleResumeProgress()} loading={resumingProgress} variant="primary">
                             Resume
                           </Button>
-                          <Button onClick={handleDiscardProgress} disabled={resumingProgress}>
+                          <Button onClick={() => { setFreshError(null); setFreshOpen(true); }} disabled={resumingProgress}>
                             Start fresh
                           </Button>
                         </InlineStack>
