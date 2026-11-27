@@ -8,12 +8,16 @@ import {
   createStagedUploadsAction,
   deleteProductMediaIdsAction,
   getExistingMediaBatchAction,
+  getOrderedMediaBatchAction,
   reorderProductMediaAction,
+  replaceMediaAtPositionsAction,
+  restoreMediaImagesAction,
 } from "@/app/(app)/products/media-upload/actions";
 
 export const dynamic = "force-dynamic";
 
 const PRODUCT_GID = /^gid:\/\/shopify\/Product\/\d+$/;
+const MEDIA_GID = /^gid:\/\/shopify\/MediaImage\/\d+$/;
 const MAX_ITEMS = 250;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
@@ -75,6 +79,28 @@ export async function POST(request: Request) {
     case "deleteIds":
       if (!isProductId(args.productId) || !isStringList(args.mediaIds)) return bad("Invalid delete request.");
       return NextResponse.json(await deleteProductMediaIdsAction(args.productId, args.mediaIds));
+    case "orderedMedia":
+      if (!isStringList(args.productIds, 100) || !args.productIds.every(isProductId)) return bad("Invalid product ids.");
+      return NextResponse.json(await getOrderedMediaBatchAction(args.productIds));
+    case "replacePositions": {
+      if (!isProductId(args.productId) || !isObjectList(args.items, MAX_ITEMS)) return bad("Invalid replace request.");
+      const items = args.items.map((i) => ({
+        position: Number(i.position),
+        resourceUrl: String(i.resourceUrl ?? ""),
+        expectedMediaId: String(i.expectedMediaId ?? ""),
+      }));
+      const valid = items.every(
+        (i) => Number.isInteger(i.position) && i.position >= 1 && i.position <= MAX_ITEMS && i.resourceUrl.startsWith("https://") && MEDIA_GID.test(i.expectedMediaId),
+      );
+      if (!valid || new Set(items.map((i) => i.position)).size !== items.length) return bad("Invalid replace request.");
+      return NextResponse.json(await replaceMediaAtPositionsAction(args.productId, items));
+    }
+    case "restoreImages": {
+      if (!isProductId(args.productId) || !isObjectList(args.items, MAX_ITEMS)) return bad("Invalid restore request.");
+      const items = args.items.map((i) => ({ mediaId: String(i.mediaId ?? ""), resourceUrl: String(i.resourceUrl ?? "") }));
+      if (!items.every((i) => MEDIA_GID.test(i.mediaId) && i.resourceUrl.startsWith("https://"))) return bad("Invalid restore request.");
+      return NextResponse.json(await restoreMediaImagesAction(args.productId, items));
+    }
     default:
       return bad("Unknown operation.");
   }

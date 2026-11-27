@@ -8,8 +8,11 @@ import {
   getExistingProductMedia,
   deleteProductMedia,
   reorderProductMedia,
+  getOrderedProductMedia,
+  replaceImageSource,
   type StagedUploadTarget,
   type ExistingMediaItem,
+  type OrderedMediaNode,
 } from "@/lib/shopify/media";
 import { revalidatePath } from "next/cache";
 
@@ -131,4 +134,122 @@ export async function reorderProductMediaAction(
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Couldn't reorder the images." };
   }
+}
+
+export type OrderedMediaResult = { ok: true; media: OrderedMediaNode[] } | { ok: false; error: string };
+
+/** Each product's full gallery in position order, for the position-based uploader. A product that can't be read reports its own error instead of failing the batch. */
+export async function getOrderedMediaBatchAction(productIds: string[]): Promise<Record<string, OrderedMediaResult>> {
+  const results = await mapWithConcurrency(productIds, MEDIA_FETCH_CONCURRENCY, async (id): Promise<readonly [string, OrderedMediaResult]> => {
+    try {
+      const media = await getOrderedProductMedia(id);
+      return [id, media ? { ok: true, media } : { ok: false, error: "Product not found." }] as const;
+    } catch (err) {
+      return [id, { ok: false, error: err instanceof Error ? err.message : "Couldn't read the product's images." }] as const;
+    }
+  });
+  return Object.fromEntries(results);
+}
+
+export interface PositionReplacement {
+  /** 1 = the first (featured) image. */
+  position: number;
+  /** The staged upload holding the new picture. */
+  resourceUrl: string;
+  /** The media item the page saw at this position when it scanned; the replacement is refused if it has since changed. */
+  expectedMediaId: string;
+}
+
+export interface PositionReplacementResult {
+  position: number;
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Replaces the pictures at the given positions, one at a time. The product's gallery is read again first, and a position is
+ * only touched if it still holds the very image the page showed — otherwise someone reordered or edited the product in
+ * between and the wrong picture could be overwritten.
+ */
+export async function replaceMediaAtPositionsAction(
+  productId: string,
+  items: PositionReplacement[],
+): Promise<{ ok: boolean; results: PositionReplacementResult[]; error?: string }> {
+  let media: OrderedMediaNode[] | null;
+  try {
+    media = await getOrderedProductMedia(productId);
+  } catch (err) {
+    return { ok: false, results: [], error: err instanceof Error ? err.message : "Couldn't read the product's images." };
+  }
+  if (!media) return { ok: false, results: [], error: "Product not found." };
+
+  const results: PositionReplacementResult[] = [];
+  for (const item of items) {
+    const current = media[item.position - 1];
+    if (!current) {
+      results.push({ position: item.position, ok: false, error: "The product no longer has an image at this position." });
+    } else if (current.id !== item.expectedMediaId) {
+      results.push({ position: item.position, ok: false, error: "The images were changed since the scan — scan again." });
+    } else if (current.kind !== "IMAGE" || current.status !== "READY") {
+      results.push({ position: item.position, ok: false, error: "That image isn't ready to be replaced yet." });
+    } else {
+      try {
+        const done = await replaceImageSource(current.id, item.resourceUrl);
+        results.push({ position: item.position, ...done });
+      } catch (err) {
+        results.push({ position: item.position, ok: false, error: err instanceof Error ? err.message : "Couldn't replace the image." });
+      }
+    }
+  }
+  if (results.some((r) => r.ok)) revalidatePath(`/products/${productId.split("/").pop()}`);
+  return { ok: results.every((r) => r.ok), results };
+}
+
+export interface ImageRestore {
+  mediaId: string;
+  /** The staged upload holding the saved copy. */
+  resourceUrl: string;
+}
+
+export interface ImageRestoreResult {
+  mediaId: string;
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Puts saved pictures back into the images they came from, matched by image id — not position, so a product that was
+ * reordered since still gets the right picture back. An image that no longer belongs to the product (deleted, or
+ * moved off it) is reported instead of touched.
+ */
+export async function restoreMediaImagesAction(
+  productId: string,
+  items: ImageRestore[],
+): Promise<{ ok: boolean; results: ImageRestoreResult[]; error?: string }> {
+  let media: OrderedMediaNode[] | null;
+  try {
+    media = await getOrderedProductMedia(productId);
+  } catch (err) {
+    return { ok: false, results: [], error: err instanceof Error ? err.message : "Couldn't read the product's images." };
+  }
+  if (!media) return { ok: false, results: [], error: "Product not found." };
+
+  const byId = new Map(media.map((m) => [m.id, m]));
+  const results: ImageRestoreResult[] = [];
+  for (const item of items) {
+    const current = byId.get(item.mediaId);
+    if (!current) {
+      results.push({ mediaId: item.mediaId, ok: false, error: "This image is no longer on the product." });
+    } else if (current.kind !== "IMAGE" || current.status !== "READY") {
+      results.push({ mediaId: item.mediaId, ok: false, error: "Shopify is still processing this image — try again in a minute." });
+    } else {
+      try {
+        results.push({ mediaId: item.mediaId, ...(await replaceImageSource(current.id, item.resourceUrl)) });
+      } catch (err) {
+        results.push({ mediaId: item.mediaId, ok: false, error: err instanceof Error ? err.message : "Couldn't restore the image." });
+      }
+    }
+  }
+  if (results.some((r) => r.ok)) revalidatePath(`/products/${productId.split("/").pop()}`);
+  return { ok: results.every((r) => r.ok), results };
 }

@@ -64,6 +64,7 @@ export const NAV_SECTIONS: NavSection[] = [
           { url: "/products/color-check", label: "Color variant checker" },
           { url: "/products/media-upload", label: "Media uploader" },
           { url: "/products/media-upload-sku", label: "Media uploader by SKU field" },
+          { url: "/products/media-upload-positions", label: "Upload media by positions" },
           { url: "/products/tag-bulk", label: "Bulk tag insert" },
           { url: "/products/content-update", label: "Content update by CSV" },
           { url: "/products/inventory", label: "Inventory" },

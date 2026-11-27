@@ -1,4 +1,4 @@
-import type { ExistingMediaItem, StagedUploadTarget } from "@/lib/shopify/media";
+import type { ExistingMediaItem, OrderedMediaNode, StagedUploadTarget } from "@/lib/shopify/media";
 
 /** No answer in this long counts as a failed step rather than a worker waiting forever. */
 const REQUEST_TIMEOUT_MS = 180_000;
@@ -37,5 +37,11 @@ export const mediaApi = {
     call<{ ok: boolean; mediaIds: string[]; error?: string }>("attach", { productId, files }),
   reorderProductMedia: (productId: string, orderedMediaIds: string[]) => call<{ ok: boolean; error?: string }>("reorder", { productId, orderedMediaIds }),
   clearProductMedia: (productId: string) => call<{ ok: boolean; error?: string }>("clear", { productId }),
+  getOrderedMedia: (productIds: string[]) =>
+    call<Record<string, { ok: true; media: OrderedMediaNode[] } | { ok: false; error: string }>>("orderedMedia", { productIds }),
+  replaceAtPositions: (productId: string, items: { position: number; resourceUrl: string; expectedMediaId: string }[]) =>
+    call<{ ok: boolean; results: { position: number; ok: boolean; error?: string }[]; error?: string }>("replacePositions", { productId, items }),
+  restoreImages: (productId: string, items: { mediaId: string; resourceUrl: string }[]) =>
+    call<{ ok: boolean; results: { mediaId: string; ok: boolean; error?: string }[]; error?: string }>("restoreImages", { productId, items }),
   deleteProductMediaIds: (productId: string, mediaIds: string[]) => call<{ ok: boolean; error?: string }>("deleteIds", { productId, mediaIds }),
 };

@@ -166,3 +166,79 @@ export async function reorderProductMedia(productId: string, orderedMediaIds: st
     return { ok: false, error: err instanceof Error ? err.message : "Couldn't reorder the images." };
   }
 }
+
+const ORDERED_MEDIA_QUERY = `
+  query OrderedProductMedia($id: ID!, $after: String) {
+    product(id: $id) {
+      media(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          mediaContentType
+          status
+          ... on MediaImage { image { url } }
+        }
+      }
+    }
+  }
+`;
+
+export interface OrderedMediaNode {
+  id: string;
+  kind: string;
+  status: string;
+  url: string | null;
+}
+
+/** Shopify holds at most 250 media per product; this only guards against a runaway loop. */
+const MAX_MEDIA_PAGES = 5;
+
+/**
+ * Every item in the product's gallery in the order the admin shows it — videos and 3D models included, because
+ * they take up a position too. Unlike `getExistingProductMedia` this THROWS on a failed read: replacing "position 3"
+ * from a guessed list would overwrite the wrong picture. Returns null when the product doesn't exist.
+ */
+export async function getOrderedProductMedia(productId: string): Promise<OrderedMediaNode[] | null> {
+  const nodes: OrderedMediaNode[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < MAX_MEDIA_PAGES; page++) {
+    const data: {
+      product: {
+        media: {
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          nodes: { id: string; mediaContentType: string; status: string; image?: { url: string } | null }[];
+        };
+      } | null;
+    } = await shopifyGraphQL(ORDERED_MEDIA_QUERY, { id: productId, after });
+    if (!data.product) return null;
+    for (const node of data.product.media.nodes) {
+      nodes.push({ id: node.id, kind: node.mediaContentType, status: node.status, url: node.image?.url ?? null });
+    }
+    if (!data.product.media.pageInfo.hasNextPage) break;
+    after = data.product.media.pageInfo.endCursor;
+  }
+  return nodes;
+}
+
+const FILE_UPDATE_MUTATION = `
+  mutation ReplaceImageSource($files: [FileUpdateInput!]!) {
+    fileUpdate(files: $files) {
+      files { id }
+      userErrors { field message }
+    }
+  }
+`;
+
+/**
+ * Swaps the picture inside an existing image, keeping the same media item — so it keeps its position in the gallery,
+ * its alt text, and every variant it is assigned to. (Deleting and re-adding would drop the variant links.)
+ * The new bytes must already be uploaded; `resourceUrl` is the staged upload's address.
+ */
+export async function replaceImageSource(mediaId: string, resourceUrl: string): Promise<{ ok: boolean; error?: string }> {
+  const data = await shopifyGraphQL<{ fileUpdate: { files: { id: string }[] | null; userErrors: UserError[] } }>(FILE_UPDATE_MUTATION, {
+    files: [{ id: mediaId, originalSource: resourceUrl }],
+  });
+  const errors = data.fileUpdate.userErrors;
+  if (errors.length > 0) return { ok: false, error: errors.map((e) => e.message).join("; ") };
+  return { ok: true };
+}
