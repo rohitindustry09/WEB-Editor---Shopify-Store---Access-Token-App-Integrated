@@ -38,8 +38,10 @@ export interface CheckpointMeta {
 }
 
 /** `www.example.com` and `example.com` share one saved crawl. Only letters, digits, dots and dashes survive, so the name can't escape the folder. */
-export function siteKey(host: string): string {
-  return host.toLowerCase().replace(/^www\./, "").replace(/[^a-z0-9.-]/g, "-").slice(0, 120);
+export function siteKey(host: string, owner: string): string {
+  const site = host.toLowerCase().replace(/^www\./, "").replace(/[^a-z0-9.-]/g, "-").slice(0, 120);
+  // Filed under the anonymous visitor that ran the crawl (a UUID, so safe in a file name), so nobody resumes or reads someone else's.
+  return `${owner}__${site}`;
 }
 
 const file = (site: string, ext: string): string => path.join(DIR, `${site}.${ext}`);

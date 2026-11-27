@@ -1,4 +1,4 @@
-import { guardApi } from "@/lib/auth/apiGuard";
+import { guardOpen } from "@/lib/auth/openGuard";
 import { NextResponse } from "next/server";
 import { mkdir, writeFile, rename, access } from "node:fs/promises";
 import path from "node:path";
@@ -14,7 +14,9 @@ import path from "node:path";
  * already there, which is what makes re-running this tool on the same
  * zip fast the second time.
  */
-const UPLOADS_ROOT = path.join(process.cwd(), "uploads", "Media-format-converter");
+const UPLOADS_BASE = path.join(process.cwd(), "uploads", "Media-format-converter");
+/** Each anonymous visitor (browser) has its own folder, so nobody can see or delete anyone else's files. */
+const rootFor = (visitor: string): string => path.join(UPLOADS_BASE, visitor);
 
 const UNSAFE_NAME_CHARS = /[\\:*?"<>|]/g;
 
@@ -50,8 +52,9 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 export async function POST(request: Request) {
-  const denied = await guardApi(request);
-  if (denied) return denied;
+  const open = await guardOpen(request);
+  if (open.denied) return open.denied;
+  const visitor = open.visitor;
   try {
     const formData = await request.formData();
     const batchName = formData.get("batchName");
@@ -73,7 +76,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "Invalid relative path." }, { status: 400 });
     }
 
-    const batchDir = path.join(UPLOADS_ROOT, sanitizeSegment(batchName.trim()));
+    const batchDir = path.join(rootFor(visitor), sanitizeSegment(batchName.trim()));
     const finalPath = path.join(batchDir, safeRelativePath);
 
     // Defense in depth beyond `sanitizeRelativePath` — confirms the

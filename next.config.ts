@@ -35,6 +35,10 @@ const nextConfig: NextConfig = {
     "172.31.*.*",
   ],
 
+  // A native (Skia) image library: it must be loaded from node_modules at runtime, not bundled — the Background customiser's
+  // server runs draw their pictures with it.
+  serverExternalPackages: ["@napi-rs/canvas"],
+
   experimental: {
     // Polaris and its icon set are huge barrel files — a single
     // `import { Button } from "@shopify/polaris"` otherwise pulls the whole

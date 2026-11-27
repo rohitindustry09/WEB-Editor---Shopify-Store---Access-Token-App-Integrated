@@ -1,4 +1,4 @@
-import { guardApi } from "@/lib/auth/apiGuard";
+import { guardOpen } from "@/lib/auth/openGuard";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { mapWithConcurrency } from "@/lib/concurrency";
@@ -18,7 +18,9 @@ import { ZipStreamWriter, waitForDrain } from "@/lib/storeScraper/zipStream";
  * response) never holds more than a handful of files in memory at once,
  * regardless of how large the whole export is.
  */
-const UPLOADS_ROOT = path.join(process.cwd(), "uploads", "Media-format-converter");
+const UPLOADS_BASE = path.join(process.cwd(), "uploads", "Media-format-converter");
+/** Each anonymous visitor (browser) has its own folder, so nobody can see or delete anyone else's files. */
+const rootFor = (visitor: string): string => path.join(UPLOADS_BASE, visitor);
 
 const READ_CONCURRENCY = 8;
 
@@ -61,8 +63,9 @@ function isPlainName(name: string): boolean {
 const headerSafe = (name: string): string => name.replace(/["\\\u0000-\u001f]/g, "-");
 
 export async function GET(request: Request) {
-  const denied = await guardApi(request);
-  if (denied) return denied;
+  const open = await guardOpen(request);
+  if (open.denied) return open.denied;
+  const visitor = open.visitor;
   const { searchParams } = new URL(request.url);
   const batchName = searchParams.get("batch")?.trim();
   if (!batchName) return new Response("Missing ?batch=.", { status: 400 });
@@ -72,7 +75,7 @@ export async function GET(request: Request) {
   const requestedName = searchParams.get("name")?.trim() ?? "";
   const downloadName = headerSafe(isPlainName(requestedName) ? requestedName : batchName);
 
-  const batchDir = path.join(UPLOADS_ROOT, batchName);
+  const batchDir = path.join(rootFor(visitor), batchName);
   const files = await listBatchFiles(batchDir);
   if (files.length === 0) {
     return new Response("Nothing saved for this batch yet — convert something first.", { status: 404 });

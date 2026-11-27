@@ -3,6 +3,7 @@ import { mkdir, open, readdir, readFile, rename, rm, stat, statfs, writeFile, ty
 import path from "node:path";
 import { DriveError, openDriveStream, type DriveStream } from "./driveFetch";
 import type { DriveJobSnapshot, DriveJobStatus } from "./driveJobTypes";
+import { VISITOR_ID } from "./accessPolicy";
 import { parseDriveLink } from "./googleDrive";
 
 /**
@@ -13,6 +14,11 @@ import { parseDriveLink } from "./googleDrive";
  */
 
 const ROOT = path.join(process.cwd(), "uploads", "drive-downloads");
+/** Each anonymous visitor (browser) has its own folder, so nobody can see, resume or delete anyone else's download. */
+const ownerRoot = (owner: string): string => {
+  if (!VISITOR_ID.test(owner)) throw new Error("Invalid visitor.");
+  return path.join(ROOT, owner);
+};
 const PIECE_SIZE = 4 * 1024 ** 2;
 const CONNECTIONS = 8;
 const MAX_ATTEMPTS = 3;
@@ -37,6 +43,7 @@ interface JobMeta {
 }
 
 interface RunState {
+  owner: string;
   fileId: string;
   url: string;
   controller: AbortController;
@@ -61,10 +68,11 @@ const globalRegistry = globalThis as typeof globalThis & { __driveJobs?: Map<str
 /** Kept on globalThis so every route module (and hot reloads in dev) share the same running jobs. */
 const registry = (globalRegistry.__driveJobs ??= new Map<string, RunState>());
 
-const dirOf = (id: string) => path.join(ROOT, id);
-const partPath = (id: string) => path.join(dirOf(id), "data.part");
-const finalPath = (id: string) => path.join(dirOf(id), "data.zip");
-const metaPath = (id: string) => path.join(dirOf(id), "meta.json");
+const dirOf = (owner: string, id: string) => path.join(ownerRoot(owner), id);
+const partPath = (owner: string, id: string) => path.join(dirOf(owner, id), "data.part");
+const finalPath = (owner: string, id: string) => path.join(dirOf(owner, id), "data.zip");
+const metaPath = (owner: string, id: string) => path.join(dirOf(owner, id), "meta.json");
+const keyOf = (owner: string, id: string) => `${owner}/${id}`;
 
 const pieceBytes = (meta: Pick<JobMeta, "total" | "pieceSize">, index: number): number => Math.max(0, Math.min(meta.pieceSize, meta.total - index * meta.pieceSize));
 const withZip = (name: string): string => (/\.zip$/i.test(name) ? name : `${name}.zip`);
@@ -72,9 +80,9 @@ const fatalIfAborted = (signal: AbortSignal): void => {
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 };
 
-async function readMeta(id: string): Promise<JobMeta | null> {
+async function readMeta(owner: string, id: string): Promise<JobMeta | null> {
   try {
-    return JSON.parse(await readFile(metaPath(id), "utf-8")) as JobMeta;
+    return JSON.parse(await readFile(metaPath(owner, id), "utf-8")) as JobMeta;
   } catch {
     return null;
   }
@@ -85,9 +93,9 @@ function queueMetaWrite(state: RunState, meta: JobMeta): void {
   const snapshot = JSON.stringify(meta);
   state.metaWrites = state.metaWrites
     .then(async () => {
-      const temp = `${metaPath(meta.fileId)}.tmp`;
+      const temp = `${metaPath(state.owner, meta.fileId)}.tmp`;
       await writeFile(temp, snapshot);
-      await rename(temp, metaPath(meta.fileId));
+      await rename(temp, metaPath(state.owner, meta.fileId));
     })
     .catch(() => undefined);
 }
@@ -172,8 +180,8 @@ async function writePiece(
   }
 }
 
-async function ensureRoom(total: number, alreadyOnDisk: number): Promise<void> {
-  const stats = await statfs(ROOT);
+async function ensureRoom(owner: string, total: number, alreadyOnDisk: number): Promise<void> {
+  const stats = await statfs(ownerRoot(owner));
   const free = stats.bavail * stats.bsize;
   const needed = Math.max(0, total - alreadyOnDisk) + DISK_MARGIN_BYTES;
   if (free < needed) {
@@ -185,6 +193,7 @@ async function ensureRoom(total: number, alreadyOnDisk: number): Promise<void> {
 async function run(state: RunState, existing: JobMeta | null): Promise<void> {
   const signal = state.controller.signal;
   const id = state.fileId;
+  const owner = state.owner;
   const sampler = setInterval(() => {
     const now = Date.now();
     state.samples.push({ at: now, bytes: state.sessionBytes });
@@ -194,7 +203,7 @@ async function run(state: RunState, existing: JobMeta | null): Promise<void> {
   let probe: DriveStream | null = null;
   try {
     try {
-      await mkdir(dirOf(id), { recursive: true });
+      await mkdir(dirOf(owner, id), { recursive: true });
     } catch {
       throw new DriveError("This server can't save files (its disk is read-only), so downloads can't run here.", true);
     }
@@ -225,8 +234,8 @@ async function run(state: RunState, existing: JobMeta | null): Promise<void> {
     state.doneBytes = job.done.reduce((sum, index) => sum + pieceBytes(job, index), 0);
     state.resumedBytes = state.doneBytes;
 
-    if (job.total > 0) await ensureRoom(job.total, state.doneBytes);
-    const file = await open(partPath(id), existing ? "r+" : "w+");
+    if (job.total > 0) await ensureRoom(state.owner, job.total, state.doneBytes);
+    const file = await open(partPath(owner, id), existing ? "r+" : "w+");
     handle = file;
     if (job.total > 0) await file.truncate(job.total);
     state.status = "downloading";
@@ -287,7 +296,7 @@ async function run(state: RunState, existing: JobMeta | null): Promise<void> {
     await file.close();
     handle = null;
     await state.metaWrites;
-    await rename(partPath(id), finalPath(id));
+    await rename(partPath(owner, id), finalPath(owner, id));
     job = { ...job, complete: true };
     queueMetaWrite(state, job);
     await state.metaWrites;
@@ -312,18 +321,19 @@ async function run(state: RunState, existing: JobMeta | null): Promise<void> {
 }
 
 /** Starts a download (or picks up a stopped one, or reports a finished one). Returns straight away; the work continues on the server. */
-export async function startDriveJob(url: string): Promise<DriveJobSnapshot> {
+export async function startDriveJob(url: string, owner: string): Promise<DriveJobSnapshot> {
   const link = parseDriveLink(url);
   if (link.kind !== "file") throw new DriveError("That doesn't look like a Google Drive file link.", true);
   const id = link.id;
 
-  const running = registry.get(id);
+  const running = registry.get(keyOf(owner, id));
   if (running?.running) return snapshotOfRun(running);
 
-  const meta = await readMeta(id);
+  const meta = await readMeta(owner, id);
   if (meta?.complete) return snapshotOfMeta(meta);
 
   const state: RunState = {
+    owner,
     fileId: id,
     url,
     controller: new AbortController(),
@@ -341,62 +351,63 @@ export async function startDriveJob(url: string): Promise<DriveJobSnapshot> {
     finished: Promise.resolve(),
     metaWrites: Promise.resolve(),
   };
-  registry.set(id, state);
+  registry.set(keyOf(owner, id), state);
   state.finished = run(state, meta);
   return snapshotOfRun(state);
 }
 
-export async function getDriveJob(id: string): Promise<DriveJobSnapshot | null> {
+export async function getDriveJob(id: string, owner: string): Promise<DriveJobSnapshot | null> {
   if (!FILE_ID.test(id)) return null;
-  const state = registry.get(id);
+  const state = registry.get(keyOf(owner, id));
   if (state) return snapshotOfRun(state);
-  const meta = await readMeta(id);
+  const meta = await readMeta(owner, id);
   return meta ? snapshotOfMeta(meta) : null;
 }
 
 /** Every download the server knows about: the ones running now plus whatever is saved on disk (finished or stopped). */
-export async function listDriveJobs(): Promise<DriveJobSnapshot[]> {
+export async function listDriveJobs(owner: string): Promise<DriveJobSnapshot[]> {
   let ids: string[] = [];
   try {
-    ids = (await readdir(ROOT)).filter((entry) => FILE_ID.test(entry));
+    ids = (await readdir(ownerRoot(owner))).filter((entry) => FILE_ID.test(entry));
   } catch {
     // No downloads folder yet.
   }
-  const all = new Set([...ids, ...registry.keys()]);
-  const snapshots = await Promise.all([...all].map((id) => getDriveJob(id)));
+  const running = [...registry.values()].filter((state) => state.owner === owner).map((state) => state.fileId);
+  const all = new Set([...ids, ...running]);
+  const snapshots = await Promise.all([...all].map((id) => getDriveJob(id, owner)));
   return snapshots.filter((s): s is DriveJobSnapshot => s !== null).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /** Stops a running download but keeps what's on disk, so it can be resumed. */
-export async function pauseDriveJob(id: string): Promise<DriveJobSnapshot | null> {
-  const state = registry.get(id);
+export async function pauseDriveJob(id: string, owner: string): Promise<DriveJobSnapshot | null> {
+  const state = registry.get(keyOf(owner, id));
   if (state?.running) {
     state.controller.abort();
     await state.finished;
   }
-  return getDriveJob(id);
+  return getDriveJob(id, owner);
 }
 
 /** Stops the download (if running) and deletes everything saved for it. */
-export async function discardDriveJob(id: string): Promise<void> {
+export async function discardDriveJob(id: string, owner: string): Promise<void> {
   if (!FILE_ID.test(id)) return;
-  const state = registry.get(id);
+  const state = registry.get(keyOf(owner, id));
   if (state?.running) {
     state.controller.abort();
     await state.finished;
   }
-  registry.delete(id);
-  await rm(dirOf(id), { recursive: true, force: true });
+  registry.delete(keyOf(owner, id));
+  await rm(dirOf(owner, id), { recursive: true, force: true });
 }
 
 /** The saved zip, when the download finished. */
-export async function savedZip(id: string): Promise<{ path: string; size: number; name: string } | null> {
+export async function savedZip(owner: string, id: string): Promise<{ path: string; size: number; name: string } | null> {
   if (!FILE_ID.test(id)) return null;
-  const meta = await readMeta(id);
+  const meta = await readMeta(owner, id);
   if (!meta?.complete) return null;
   try {
-    const info = await stat(finalPath(id));
-    return { path: finalPath(id), size: info.size, name: meta.name };
+    const info = await stat(finalPath(owner, id));
+    return { path: finalPath(owner, id), size: info.size, name: meta.name };
   } catch {
     return null;
   }

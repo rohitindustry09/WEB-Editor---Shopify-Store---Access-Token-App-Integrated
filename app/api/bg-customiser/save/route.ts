@@ -1,4 +1,4 @@
-import { guardApi } from "@/lib/auth/apiGuard";
+import { guardOpen } from "@/lib/auth/openGuard";
 import { NextResponse } from "next/server";
 import { mkdir, writeFile, rename, access } from "node:fs/promises";
 import path from "node:path";
@@ -11,7 +11,9 @@ import path from "node:path";
  * re-processing. Skips a write when the file is already there, which is
  * what makes re-running this tool on the same zip fast the second time.
  */
-const UPLOADS_ROOT = path.join(process.cwd(), "uploads", "background-customiser");
+const UPLOADS_BASE = path.join(process.cwd(), "uploads", "background-customiser");
+/** Each anonymous visitor (browser) has its own folder, so nobody can see or delete anyone else's files. */
+const rootFor = (visitor: string): string => path.join(UPLOADS_BASE, visitor);
 
 const UNSAFE_PATH_CHARS = /[\\/:*?"<>|]/g;
 
@@ -29,8 +31,9 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 export async function POST(request: Request) {
-  const denied = await guardApi(request);
-  if (denied) return denied;
+  const open = await guardOpen(request);
+  if (open.denied) return open.denied;
+  const visitor = open.visitor;
   try {
     const formData = await request.formData();
     const website = formData.get("website");
@@ -51,7 +54,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "Missing file." }, { status: 400 });
     }
 
-    const siteDir = path.join(UPLOADS_ROOT, sanitizeSegment(website.trim()));
+    const siteDir = path.join(rootFor(visitor), sanitizeSegment(website.trim()));
     const skuDir = path.join(siteDir, sanitizeSegment(sku.trim().toUpperCase()));
     await mkdir(skuDir, { recursive: true });
 

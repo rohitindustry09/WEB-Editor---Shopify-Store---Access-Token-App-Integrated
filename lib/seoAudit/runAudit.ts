@@ -55,7 +55,7 @@ const PAGE_TITLE_LIMIT = 200;
  * so this function's own job is running every check module over whatever
  * `crawlSite` found and aggregating the results into one report.
  */
-export async function runStreamingAudit(domainInput: string, onEvent: EmitAuditEvent, maxPages: number = DEFAULT_MAX_PAGES, liveStore: LiveStoreInfo | null = null, workers = 0, mode: "resume" | "fresh" = "fresh"): Promise<SeoAuditReport> {
+export async function runStreamingAudit(domainInput: string, onEvent: EmitAuditEvent, maxPages: number = DEFAULT_MAX_PAGES, liveStore: LiveStoreInfo | null = null, workers = 0, mode: "resume" | "fresh" = "fresh", owner = ""): Promise<SeoAuditReport> {
   // On the connected store the primary domain is the real address, whatever was typed (e.g. the .myshopify.com one).
   const origin = liveStore ? normalizeDomainInput(liveStore.primaryDomain) : normalizeDomainInput(domainInput);
   if (liveStore) onEvent({ type: "live-store", total: liveStore.total, counts: liveStore.counts, errors: liveStore.errors });
@@ -72,7 +72,7 @@ export async function runStreamingAudit(domainInput: string, onEvent: EmitAuditE
       onEvent({ type: "step-done", id: "sitemap", detail: event.found ? `${event.pageCount} URLs` : undefined });
       onEvent({ type: "step-start", id: "crawl" });
     }
-  }, liveStore?.urls ?? [], workers, mode);
+  }, liveStore?.urls ?? [], workers, mode, owner);
   onEvent({ type: "step-done", id: "crawl", detail: `${crawl.pages.length} pages` });
 
   // The sitemap's own <loc> ordering (or link-discovery order) has no

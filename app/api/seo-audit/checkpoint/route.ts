@@ -1,4 +1,4 @@
-import { guardApi } from "@/lib/auth/apiGuard";
+import { guardOpen } from "@/lib/auth/openGuard";
 import { getSession } from "@/lib/shopify/session";
 import { getPrimaryDomain } from "@/lib/seoAudit/liveStore";
 import { readMeta, siteKey } from "@/lib/seoAudit/checkpoint";
@@ -15,8 +15,9 @@ function typedHost(input: string): string {
  * The connected store is looked up by its primary domain, because that is the address its crawl is saved under.
  */
 export async function GET(request: Request) {
-  const denied = await guardApi(request);
-  if (denied) return denied;
+  const open = await guardOpen(request);
+  if (open.denied) return open.denied;
+  const visitor = open.visitor;
   const typed = typedHost(new URL(request.url).searchParams.get("domain") ?? "");
   const session = await getSession();
 
@@ -29,5 +30,5 @@ export async function GET(request: Request) {
   }
   if (!host) return Response.json({ meta: null });
 
-  return Response.json({ meta: await readMeta(siteKey(host)) });
+  return Response.json({ meta: await readMeta(siteKey(host, visitor)) });
 }

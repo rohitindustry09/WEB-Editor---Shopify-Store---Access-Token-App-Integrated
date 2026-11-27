@@ -28,7 +28,6 @@ import {
 import { Select } from "@/components/ui/Select";
 import {
   PaintBrushFlatIcon,
-  ExportIcon,
   DeleteIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -38,8 +37,6 @@ import {
   EyeDropperIcon,
   QuestionCircleIcon,
   InfoIcon,
-  ClockIcon,
-  RefreshIcon,
   SearchIcon,
   ViewIcon,
   FolderIcon,
@@ -62,10 +59,7 @@ import {
   type LogoPosition,
   type CanvasShape,
   type TextOverlay,
-  type AverageColor,
-  averageColorDistance,
 } from "@/lib/backgroundComposite";
-import { mapWithConcurrency } from "@/lib/concurrency";
 import { BackgroundModeEditor } from "./BackgroundModeEditor";
 import { BeforeAfterSlider } from "./BeforeAfterSlider";
 import { publishGridBridge } from "./gridBridge";
@@ -78,16 +72,14 @@ import {
   backgroundConfigFor,
   type BackgroundEditorState,
 } from "./backgroundEditorState";
-import { loadPersistedSettings, savePersistedSettings, toPersistableBackgroundState } from "./persistedSettings";
-import { computeZipSignature } from "./zipSignature";
+import { loadPersistedSettings, savePersistedSettings, toPersistableBackgroundState, type PersistedBgCustomiserSettings } from "./persistedSettings";
 import { DriveLinkImport } from "./DriveLinkImport";
 import { clearSavedLogo, loadSavedLogo, saveLogo } from "./logoStore";
-import { getJobMeta, saveJobMeta, saveResult, loadSavedResults, clearJob, type JobMeta } from "./progressStore";
-import { runCompositeWorkerPool, getDefaultWorkerCount, MAX_WORKERS } from "./workerPool";
-import { ServerSaveQueue, uploadImageToServer } from "./serverSaveQueue";
-import type { CompositeWorkerJob } from "./compositeWorker";
+import { ServerRunsPanel } from "./ServerRunsPanel";
+import { bgJobs, bgWorkspace, refOfRemoteSource, remoteSourceForRef, uploadZipToServer, type UploadProgress } from "@/lib/bgJobsApi";
+import { toStoredBackground, toStoredLogo, type BgJobSpec, type BgZipRef, type StoredBackground, type StoredLogo } from "@/lib/bgJobTypes";
 import { MediaConversionSettings, DEFAULT_CONVERSION_STATE, FORMAT_OPTIONS, type ConversionUiState } from "@/components/products/MediaConversionSettings";
-import { toConversionSettings, conversionTag, type ConvertTo, type WorkerConversion } from "@/lib/conversionSettings";
+import { toConversionSettings, type ConvertTo, type WorkerConversion } from "@/lib/conversionSettings";
 
 // A safety cap on how large a single folder's position range can be —
 // each file's "shot number" is just its 1-based position within its own
@@ -123,45 +115,18 @@ interface ZipData {
   folders: SkuMediaFolder[];
 }
 
-/** Triggers a real browser download from a server URL (`Content-Disposition: attachment`) — used instead of building a `Blob` client-side, see `export-zip/route.ts`'s own note on why. */
-function triggerUrlDownload(url: string) {
-  const link = document.createElement("a");
-  link.href = url;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-}
-
-/** Composited output is always PNG (see backgroundComposite.ts) — the filename follows along so a downloaded ".jpg" never actually contains JPEG bytes. */
-function outputPathFor(path: string): string {
-  return path.replace(/\.[a-zA-Z0-9]+$/, ".png");
-}
-
-/** One flagged image — which shot-number column's background it got, and where it lives, so it can actually be found and re-checked. */
-interface OutlierResult {
-  path: string;
-  filename: string;
-  column: "A" | "B";
-  folder: string;
-  shot: number | null;
-}
-
-/** One image that couldn't be processed, with the column its job belonged to. */
-interface FailedResult {
-  path: string;
-  filename: string;
-  columnLabel: string;
-  folder: string;
-  shot: number | null;
-  message: string;
-}
-
 /** Column A / Column B are the two shot-number groups that get a background; anything else is a zoom/logo-only or convert-only job with no column. */
-function columnLabelFor(mode: CompositeWorkerJob["mode"] | undefined): string {
-  if (mode === "primary") return "Column A";
-  if (mode === "secondary") return "Column B";
-  if (mode === "convert-only") return "No column (convert only)";
-  return "No column (zoom / logo)";
+function formatUploadSize(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(0, Math.round(bytes / 1024))} KB`;
+}
+
+function formatUploadEta(seconds: number): string {
+  const total = Math.max(1, Math.round(seconds));
+  if (total < 60) return `${total}s`;
+  if (total < 3600) return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s`;
+  return `${Math.floor(total / 3600)}h ${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}m`;
 }
 
 const STATUS_ICON: Partial<Record<FileStatus, { source: typeof CheckCircleIcon; tone: "success" | "critical" }>> = {
@@ -169,11 +134,6 @@ const STATUS_ICON: Partial<Record<FileStatus, { source: typeof CheckCircleIcon; 
   error: { source: AlertCircleIcon, tone: "critical" },
 };
 
-// 1 through MAX_WORKERS (8) — the worker-count picker's own option list.
-const WORKER_COUNT_OPTIONS = Array.from({ length: MAX_WORKERS }, (_, i) => {
-  const count = i + 1;
-  return { value: String(count), label: `${count} worker${count === 1 ? "" : "s"}` };
-});
 
 // "Leave as it is" first, then the same formats the Media Format Converter offers.
 const CONVERT_TO_OPTIONS = [{ label: "Leave as it is (no conversion)", value: "leave" }, ...FORMAT_OPTIONS];
@@ -187,19 +147,11 @@ export function BgCustomiserForm() {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [folderSearch, setFolderSearch] = useState("");
   const [howItWorksOpen, setHowItWorksOpen] = useState(false);
-  // Identifies "this same zip" across a refresh/restart — see
-  // zipSignature.ts. `savedProgress` is only set when a previous run's
-  // progress was found in IndexedDB for the zip just added; resuming or
-  // discarding it clears this back to null.
-  const [zipSignature, setZipSignature] = useState<string | null>(null);
-  const [savedProgress, setSavedProgress] = useState<{ doneCount: number; totalCount: number } | null>(null);
-  const [resumingProgress, setResumingProgress] = useState(false);
   // The zip's own filename (minus ".zip") — used as the site folder under
   // uploads/background-customiser/<site>/<SKU>/... so every processed
   // image lands on local disk as it's produced, the same way the store
   // scraper's own uploads/<site>/ folder works.
   const [siteFolderName, setSiteFolderName] = useState<string>("site");
-  const [serverSaveProgress, setServerSaveProgress] = useState<{ done: number; total: number } | null>(null);
   // Folder rows past FOLDER_PREVIEW_COUNT stay unmounted until this flips —
   // deliberately not eager, since a big store's folder list is the one
   // part of this page whose size scales with the zip instead of staying
@@ -268,20 +220,23 @@ export function BgCustomiserForm() {
   // JSON-serializable — so those come back empty and need re-adding, but
   // every other setting (colors, gradient, mode, tolerance, zoom, logo
   // position/size/margin) comes back exactly as it was left.
+  /** Puts saved settings back — used for what this browser kept and for what the server kept. */
+  const applyPersistedSettings = (persisted: PersistedBgCustomiserSettings) => {
+    setForegroundZoomPercent(persisted.foregroundZoomPercent);
+    if (persisted.canvasShape) setCanvasShape(persisted.canvasShape);
+    setBgStateA((prev) => ({ ...prev, ...persisted.bgStateA }));
+    setBgStateB((prev) => ({ ...prev, ...persisted.bgStateB }));
+    setLogoPosition(persisted.logoPosition);
+    setLogoCustomX(persisted.logoCustomX);
+    setLogoCustomY(persisted.logoCustomY);
+    setLogoSizePercent(persisted.logoSizePercent);
+    setLogoMarginPercent(persisted.logoMarginPercent);
+  };
+
   useEffect(() => {
     const persisted = loadPersistedSettings();
     if (!persisted) return;
-    const timer = setTimeout(() => {
-      setForegroundZoomPercent(persisted.foregroundZoomPercent);
-      if (persisted.canvasShape) setCanvasShape(persisted.canvasShape);
-      setBgStateA((prev) => ({ ...prev, ...persisted.bgStateA }));
-      setBgStateB((prev) => ({ ...prev, ...persisted.bgStateB }));
-      setLogoPosition(persisted.logoPosition);
-      setLogoCustomX(persisted.logoCustomX);
-      setLogoCustomY(persisted.logoCustomY);
-      setLogoSizePercent(persisted.logoSizePercent);
-      setLogoMarginPercent(persisted.logoMarginPercent);
-    }, 0);
+    const timer = setTimeout(() => applyPersistedSettings(persisted), 0);
     return () => clearTimeout(timer);
   }, []);
 
@@ -335,20 +290,6 @@ export function BgCustomiserForm() {
   // tick was the whole problem).
   const [previewSampleBlob, setPreviewSampleBlob] = useState<Blob | null>(null);
 
-  // ---- Processing ----
-  const [processing, setProcessing] = useState(false);
-  const [processError, setProcessError] = useState<string | null>(null);
-  // How many Web Workers to spawn for the next run — see workerPool.ts.
-  // Starts at a fixed, SSR-safe 4 and is corrected to this device's own
-  // core count right after mount (`navigator` doesn't exist during server
-  // rendering, and reading it during the initial client render too would
-  // make the very first client render disagree with the server-rendered
-  // HTML — a hydration mismatch).
-  const [workerCount, setWorkerCount] = useState(4);
-  useEffect(() => {
-    const timer = setTimeout(() => setWorkerCount(getDefaultWorkerCount()), 0);
-    return () => clearTimeout(timer);
-  }, []);
   // "Convert to" — a required choice whose default, "Leave as it is", keeps
   // today's behavior exactly. Anything else converts every image in the
   // exported zip (edited ones right after compositing, untouched ones
@@ -360,44 +301,7 @@ export function BgCustomiserForm() {
     () => (convertTo === "leave" ? undefined : { settings: toConversionSettings(conversionUi, convertTo), renamePattern: conversionUi.renamePattern }),
     [convertTo, conversionUi],
   );
-  const conversionKey = conversion ? conversionTag(conversion.settings, conversion.renamePattern) : "none";
-  // Converted output lives in its own folder per conversion setup (so a zip never mixes formats from different runs); "leave" keeps the original folder.
-  const outputSite = conversion ? `${siteFolderName}__${conversionKey}` : siteFolderName;
   const convertToLabel = CONVERT_TO_OPTIONS.find((o) => o.value === convertTo)?.label ?? "";
-  const [zipping, setZipping] = useState(false);
-  const [lastDownload, setLastDownload] = useState<{ url: string; filename: string; count: number } | null>(null);
-  // A background-swap batch should end up with every result's background
-  // color landing roughly the same — these are the ones that didn't, worth
-  // a second look (a wrong column applied, a logo/zoom overlap, a source
-  // photo whose backdrop wasn't actually plain). Informational only, never
-  // blocks or excludes anything from the export.
-  const [outlierResults, setOutlierResults] = useState<OutlierResult[]>([]);
-  const [failedResults, setFailedResults] = useState<FailedResult[]>([]);
-  const cancelledRef = useRef(false);
-  // Set for the duration of a `processAll` run — lets `cancelProcessing`
-  // reach into the currently-running worker pool without processAll
-  // needing to return anything to the click handler that started it.
-  const activePoolCancelRef = useRef<(() => void) | null>(null);
-  // Separate from `cancelledRef` — that one stops the compositing pass;
-  // this one stops `saveAllFilesToServer`'s upload traversal, which can
-  // keep running well after compositing itself has finished and has its
-  // own Cancel button for exactly that stretch.
-  const zipCancelledRef = useRef(false);
-  // Buffers `updateFile` patches instead of calling `setFiles` once per
-  // image — with several thousand images and up to 8 workers reporting
-  // results in a burst, one `setFiles` (and the full-Map clone + re-render
-  // it triggers) per single result was enough rapid-fire React state
-  // updates to trip React's own runaway-update guard ("Maximum update
-  // depth exceeded"). Flushed on a short timer instead — see
-  // `queueFileUpdate`/`flushFileUpdates` below.
-  const pendingFileUpdatesRef = useRef<Map<string, Partial<FileEntry>>>(new Map());
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    return () => {
-      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
-    };
-  }, []);
-
   // ---- Live preview ----
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -659,7 +563,6 @@ export function BgCustomiserForm() {
       setManualOverridesA(new Map());
       setExpandedFolders(new Set([folders[0].sku]));
       setFoldersRevealed(false);
-      setProcessError(null);
       // The zip's own filename becomes the "site" folder under
       // uploads/background-customiser/ — matches how the zips this tool
       // is meant to work on are already named (e.g. a store-scraper
@@ -667,14 +570,6 @@ export function BgCustomiserForm() {
       // site-named folder that export itself would use.
       setSiteFolderName(zipFile.name.replace(/\.zip$/i, "").trim() || "site");
 
-      // Same zip re-added after a refresh or a server restart? Check for
-      // progress saved under this exact signature (see zipSignature.ts) —
-      // shown as a banner rather than auto-applied, so it's the user's
-      // call whether to pick up where they left off.
-      const signature = await computeZipSignature(zipFile, folders);
-      setZipSignature(signature);
-      const meta = await getJobMeta(signature);
-      setSavedProgress(meta && meta.doneCount > 0 ? { doneCount: meta.doneCount, totalCount: meta.totalCount } : null);
     } catch (err) {
       setZipError(err instanceof Error ? err.message : "Couldn't read this zip file.");
     } finally {
@@ -690,26 +585,6 @@ export function BgCustomiserForm() {
     }
     await openZipSource(zipFile);
   };
-
-  const handleResumeProgress = async () => {
-    if (!zipSignature) return;
-    setResumingProgress(true);
-    try {
-      const saved = await loadSavedResults(zipSignature);
-      setFiles((prev) => {
-        const next = new Map(prev);
-        for (const [path, blob] of saved) {
-          const existing = next.get(path);
-          if (existing) next.set(path, { ...existing, status: "done", resultBlob: blob, error: undefined });
-        }
-        return next;
-      });
-      setSavedProgress(null);
-    } finally {
-      setResumingProgress(false);
-    }
-  };
-
 
   const handleBgImageDropA = (file: File) => {
     patchBgStateA({ bgImageFile: file, bgImagePreviewUrl: trackUrl(URL.createObjectURL(file)) });
@@ -849,41 +724,6 @@ export function BgCustomiserForm() {
     }
   };
 
-  /** Flushes every buffered patch from `queueFileUpdate` into `files` state as one `setFiles` call, regardless of how many images it covers. */
-  const flushFileUpdates = () => {
-    if (flushTimerRef.current) {
-      clearTimeout(flushTimerRef.current);
-      flushTimerRef.current = null;
-    }
-    if (pendingFileUpdatesRef.current.size === 0) return;
-    const updates = pendingFileUpdatesRef.current;
-    pendingFileUpdatesRef.current = new Map();
-    setFiles((prev) => {
-      const next = new Map(prev);
-      for (const [path, patch] of updates) {
-        const existing = next.get(path);
-        if (existing) next.set(path, { ...existing, ...patch });
-      }
-      return next;
-    });
-  };
-
-  /**
-   * Patches one file's entry in `files` state — coalesced: a burst of
-   * results arriving close together (several workers finishing
-   * near-simultaneously) gets buffered and applied as ONE `setFiles` call
-   * roughly every 80ms, instead of one `setFiles` — and one full Map
-   * clone, and one re-render of this whole page — per single image.
-   */
-  const queueFileUpdate = (path: string, patch: Partial<FileEntry>) => {
-    pendingFileUpdatesRef.current.set(path, patch);
-    if (flushTimerRef.current) return;
-    flushTimerRef.current = setTimeout(() => {
-      flushTimerRef.current = null;
-      flushFileUpdates();
-    }, 80);
-  };
-
   // Column A — gets the full background config above (color/gradient/
   // image/replace-color, whichever's selected). A folder with a manual
   // override (see `manualOverridesA`) uses ONLY that one file, ignoring the
@@ -974,364 +814,168 @@ export function BgCustomiserForm() {
     return Array.from(combined.values());
   }, [hasGlobalEdit, conversion, files, selectedFiles, secondaryFiles]);
 
-  const cancelProcessing = () => {
-    cancelledRef.current = true;
-    activePoolCancelRef.current?.();
-  };
+  // ---- Runs on the server ----
+  // The zip must be on the server for a run to work from it: a Drive download or an earlier upload already is; a zip picked from
+  // this computer is uploaded in the background as soon as it is added.
+  const [serverRunsKey, setServerRunsKey] = useState(0);
+  const [serverRunBusy, setServerRunBusy] = useState(false);
+  const [serverRunError, setServerRunError] = useState<string | null>(null);
+  const [localUpload, setLocalUpload] = useState<{ file: File; progress: UploadProgress; ref: BgZipRef | null; error: string | null } | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
 
-  const cancelZipping = () => {
-    zipCancelledRef.current = true;
-  };
-
-  /**
-   * Makes sure every file in the zip — not just the ones a worker job
-   * actually composited — ends up saved at
-   * uploads/background-customiser/<site>/<SKU>/<filename>. An untouched
-   * file still needs to be there for the eventual download (built by
-   * `export-zip/route.ts`, streamed straight from this folder) to be a
-   * complete mirror of the original zip plus whatever was changed.
-   * `alreadyUploaded` skips paths `onResult` already queued during
-   * compositing, so a freshly-processed image isn't uploaded twice.
-   *
-   * Reads and uploads one file at a time, bounded concurrency, never
-   * accumulating the batch into memory — this is what replaced building
-   * one giant in-memory zip `Blob` client-side, which is what reliably
-   * crashed the tab outright ("Out of Memory") on a real batch of
-   * 16000+ images. The actual downloadable zip no longer exists in the
-   * browser's memory at any point; it's assembled server-side, streamed
-   * from disk, once every file here is saved.
-   */
-  const saveAllFilesToServer = async (
-    localResults: Map<string, Blob>,
-    alreadyUploaded: Set<string>,
-    outputNames: Map<string, string>,
-    uploadSite: string,
-  ) => {
-    if (!zipData) return;
-    const allPaths = zipData.folders.flatMap((f) => f.filePaths);
-    const remaining = allPaths.filter((p) => !alreadyUploaded.has(p));
-
-    let done = alreadyUploaded.size;
-    const total = allPaths.length;
-    let lastUpdateAt = 0;
-    setServerSaveProgress({ done, total });
-
-    await mapWithConcurrency(remaining, 6, async (path) => {
-      if (zipCancelledRef.current) return;
-      const entry = files.get(path);
-      if (!entry) return;
-
-      const resultBlob = localResults.get(path) ?? entry.resultBlob;
-      const blob = resultBlob ?? (await readZipImage(zipData.zip, path))?.blob;
-      if (!blob) return;
-      const filename = resultBlob ? (outputNames.get(path) ?? outputPathFor(entry.filename)) : entry.filename;
-
-      await uploadImageToServer({ website: uploadSite, sku: entry.folder, filename, blob });
-
-      done += 1;
-      const now = Date.now();
-      if (done === total || now - lastUpdateAt > 100) {
-        lastUpdateAt = now;
-        setServerSaveProgress({ done, total });
-      }
-    });
-  };
-
-  const processAll = async () => {
-    if (!zipData || processTargets.length === 0) return;
-    if (effectiveBgKind === "image" && !bgStateA.bgImageFile) {
-      setProcessError("Add a background image for Column A first.");
-      return;
-    }
-    if (effectiveSecondaryBgKind === "image" && !bgStateB.bgImageFile) {
-      setProcessError("Add a background image for Column B first.");
-      return;
-    }
-
-    cancelledRef.current = false;
-    setProcessError(null);
-    setFailedResults([]);
-    setLastDownload(null);
-    setProcessing(true);
-
-    const targets = processTargets.map((f) => f.path);
-    // Three groups: column A gets its own background config, column B
-    // gets its own (fully independent) background config, and anything in
-    // neither gets zoom/logo only (`applyZoomAndLogo`) — see the state
-    // block's own comment on `secondaryIndices` for why these two columns
-    // exist and are mutually exclusive.
-    const primaryPaths = new Set(selectedFiles.map((f) => f.path));
-    const secondaryPaths = new Set(secondaryFiles.map((f) => f.path));
-
-    // Collected locally, not read back from `files` state — `files`
-    // won't have caught up with this run's `queueFileUpdate` calls yet by
-    // the time `saveAllFilesToServer` needs it (those are buffered, see
-    // `queueFileUpdate`'s own comment). Seeded with anything already done
-    // (a resumed result, or left over from an earlier run this session)
-    // so the final export includes it without redoing the work.
-    const localResults = new Map<string, Blob>();
-    // Final filenames for results that went through format conversion (new extension / rename pattern).
-    const outputNames = new Map<string, string>();
-    const avgColors = new Map<string, AverageColor>();
-    // Converted output gets its own folder per conversion setup, so changing
-    // format/quality/etc. never leaves the previous run's files mixed into
-    // the zip that's built from this folder.
-    const uploadSite = outputSite;
-    const jobs: CompositeWorkerJob[] = [];
-    for (const path of targets) {
-      const existing = files.get(path);
-      // A finished result is only reused when it was made under the conversion setup chosen right now.
-      if (existing?.status === "done" && existing.resultBlob && (existing.convertTag ?? "none") === conversionKey) {
-        localResults.set(path, existing.resultBlob);
-        if (existing.outputFilename) outputNames.set(path, existing.outputFilename);
-        continue;
-      }
-      jobs.push({
-        path,
-        mode: primaryPaths.has(path) ? "primary" : secondaryPaths.has(path) ? "secondary" : hasGlobalEdit ? "zoom-only" : "convert-only",
-        folder: existing?.folder ?? "",
-        position: existing?.index ?? 0,
-      });
-    }
-
-    setFiles((prev) => {
-      const next = new Map(prev);
-      for (const job of jobs) {
-        const existing = next.get(job.path);
-        if (existing) next.set(job.path, { ...existing, status: "queued", error: undefined });
-      }
-      return next;
-    });
-
-    let failures = 0;
-    // Collected here and shown once the run ends — setting React state per failed image would re-render once per error in a burst.
-    const failedList: FailedResult[] = [];
-    const modeByPath = new Map(jobs.map((job) => [job.path, job.mode]));
-    let doneCount = localResults.size;
-    const totalCount = targets.length;
-
-    // Saves each processed image to uploads/background-customiser/<site>/
-    // <SKU>/ as it's produced — the same on-disk layout (and the same
-    // "skip if already there" fast-path) the store scraper's own
-    // uploads/<site>/ folder uses, so a future run (or feature) can read
-    // straight from disk instead of reprocessing. Runs alongside
-    // compositing, not after it — no reason to wait for the whole batch
-    // to finish before the first images are already saved.
-    let serverSaveDone = 0;
-    let serverSaveTotal = 0;
-    const serverSaveQueue = new ServerSaveQueue(() => {
-      serverSaveDone += 1;
-      setServerSaveProgress({ done: serverSaveDone, total: serverSaveTotal });
-    });
-    // Paths already queued for upload here, during compositing — the
-    // later full-traversal pass (`saveAllFilesToServer`) skips these so a
-    // freshly-processed image isn't uploaded twice.
-    const uploadedPaths = new Set<string>();
-
-    // Splits `jobs` across one Web Worker per CPU core (see workerPool.ts)
-    // instead of running every composite on the main thread — real
-    // parallelism, not just interleaved async work on one thread.
-    const handle = runCompositeWorkerPool({
-      zip: zipData.zip,
-      jobs,
-      primaryConfig: backgroundConfig,
-      secondaryConfig: secondaryBackgroundConfig,
-      foregroundZoom,
-      logo: logoOverlay,
-      canvasShape,
-      textOverlay,
-      workerCount,
-      conversion,
-      onResult: (path, blob, avgColor, outputFilename) => {
-        localResults.set(path, blob);
-        if (outputFilename) outputNames.set(path, outputFilename);
-        if (avgColor) avgColors.set(path, avgColor);
-        queueFileUpdate(path, { status: "done", resultBlob: blob, outputFilename, convertTag: conversionKey, error: undefined });
-        doneCount += 1;
-        const entry = files.get(path);
-        if (entry) {
-          serverSaveTotal += 1;
-          uploadedPaths.add(path);
-          serverSaveQueue.push({ website: uploadSite, sku: entry.folder, filename: outputFilename ?? outputPathFor(entry.filename), blob });
-        }
-        // The resume store only keeps the blob (no filename / conversion info),
-        // so a converted result must not go in it — it would later be restored
-        // as if it were a plain composited PNG. Converted output is already
-        // saved to disk as it's produced, which is what survives a refresh.
-        if (zipSignature && !conversion) {
-          void saveResult(zipSignature, path, blob);
-          const meta: JobMeta = { signature: zipSignature, updatedAt: Date.now(), totalCount, doneCount };
-          void saveJobMeta(meta);
-        }
-      },
-      onError: (path, message) => {
-        failures += 1;
-        const columnLabel = columnLabelFor(modeByPath.get(path));
-        const entry = files.get(path);
-        failedList.push({ path, filename: entry?.filename ?? path, columnLabel, folder: entry?.folder ?? "", shot: entry?.index ?? null, message });
-        queueFileUpdate(path, { status: "error", error: message, columnLabel });
-      },
-    });
-    activePoolCancelRef.current = handle.cancel;
-
+  /** Sends the zip to the server (only when a run needs it). Resolves with its reference, or null when it failed or was cancelled. */
+  const startLocalUpload = async (zipFile: File): Promise<BgZipRef | null> => {
+    uploadAbortRef.current?.abort();
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    const empty: UploadProgress = { sent: 0, total: zipFile.size, bytesPerSecond: 0, etaSeconds: null, alreadyThere: 0 };
+    setLocalUpload({ file: zipFile, progress: empty, ref: null, error: null });
+    const patch = (change: Partial<{ progress: UploadProgress; ref: BgZipRef | null; error: string | null }>) =>
+      setLocalUpload((current) => (current && current.file === zipFile ? { ...current, ...change } : current));
     try {
-      await handle.promise;
-    } finally {
-      flushFileUpdates();
-      activePoolCancelRef.current = null;
-      if (cancelledRef.current) {
-        setFiles((prev) => {
-          const next = new Map(prev);
-          for (const job of jobs) {
-            const existing = next.get(job.path);
-            if (existing && (existing.status === "queued" || existing.status === "processing")) {
-              next.set(job.path, { ...existing, status: "skipped" });
-            }
-          }
-          return next;
-        });
-      }
-      setProcessing(false);
-    }
-    setFailedResults(failedList);
-
-    // A background-swap batch's outputs should all land roughly the same
-    // corner color — median-per-channel is the robust center (mean would
-    // get dragged around by the very outliers this is trying to find), and
-    // anything far enough from it gets flagged. Skipped for a tiny batch
-    // (fewer than 4 background-swapped results): "the median of 2 numbers"
-    // isn't a meaningful center to measure outliers against.
-    if (!cancelledRef.current && avgColors.size >= 4) {
-      const colors = Array.from(avgColors.values());
-      const median = (values: number[]) => {
-        const sorted = [...values].sort((a, b) => a - b);
-        return sorted[Math.floor(sorted.length / 2)];
-      };
-      const medianColor: AverageColor = {
-        r: median(colors.map((c) => c.r)),
-        g: median(colors.map((c) => c.g)),
-        b: median(colors.map((c) => c.b)),
-      };
-      const OUTLIER_DISTANCE_THRESHOLD = 45;
-      const outliers: OutlierResult[] = [];
-      for (const [path, color] of avgColors) {
-        if (averageColorDistance(color, medianColor) > OUTLIER_DISTANCE_THRESHOLD) {
-          const entry = files.get(path);
-          outliers.push({
-            path,
-            filename: entry?.filename ?? path,
-            // Only primary / secondary jobs are ever sampled for color, so anything not in column A was column B.
-            column: primaryPaths.has(path) ? "A" : "B",
-            folder: entry?.folder ?? "",
-            shot: entry?.index ?? null,
-          });
-        }
-      }
-      setOutlierResults(outliers);
-    } else {
-      setOutlierResults([]);
-    }
-
-    if (cancelledRef.current) {
-      setProcessError("Cancelled — anything already finished is kept, and saved so you can resume later.");
-      await serverSaveQueue.drain();
-      setServerSaveProgress(null);
-      return;
-    }
-    if (failures > 0) {
-      setProcessError(`${failures} image${failures === 1 ? "" : "s"} couldn't be updated and ${failures === 1 ? "was" : "were"} left unchanged.`);
-    }
-    if (localResults.size === 0) {
-      await serverSaveQueue.drain();
-      setServerSaveProgress(null);
-      return;
-    }
-
-    // Most per-result saves already fired during compositing (they run
-    // alongside it, not after) — drain waits out whatever's still
-    // trickling through the upload queue's concurrency limit, then
-    // `saveAllFilesToServer` covers the rest: anything seeded from an
-    // earlier run plus every genuinely untouched file, so the on-disk
-    // folder ends up a complete mirror before the zip is built from it.
-    zipCancelledRef.current = false;
-    setZipping(true);
-    try {
-      await serverSaveQueue.drain(() => zipCancelledRef.current);
-      await saveAllFilesToServer(localResults, uploadedPaths, outputNames, uploadSite);
-      if (zipCancelledRef.current) {
-        setProcessError("Cancelled — everything saved so far is on disk at uploads/background-customiser/, ready to export anytime.");
-        return;
-      }
-      const downloadUrl = `/api/bg-customiser/export-zip?site=${encodeURIComponent(uploadSite)}&name=${encodeURIComponent(siteFolderName)}`;
-      const filename = `${siteFolderName}.zip`;
-      triggerUrlDownload(downloadUrl);
-      setLastDownload({ url: downloadUrl, filename, count: localResults.size });
-      // The batch finished and downloaded successfully — the saved
-      // per-image progress has done its job, so there's no reason to keep
-      // gigabytes of result blobs sitting in IndexedDB indefinitely. The
-      // files on disk under uploads/ stay, though — that's what makes the
-      // download re-triggerable later without reprocessing anything.
-      if (zipSignature) void clearJob(zipSignature);
+      const ref = await uploadZipToServer(zipFile, (progress) => patch({ progress }), controller.signal);
+      patch({ ref });
+      return ref;
     } catch (err) {
-      setProcessError(err instanceof Error ? err.message : "Couldn't save files to the server.");
-    } finally {
-      setZipping(false);
-      setServerSaveProgress(null);
+      if (!controller.signal.aborted) patch({ error: err instanceof Error ? err.message : "The upload failed." });
+      return null;
     }
   };
 
-  // The saved-progress banner's "Start fresh" asks first, because it deletes the files saved for this zip so far.
-  const [freshOpen, setFreshOpen] = useState(false);
-  const [freshBusy, setFreshBusy] = useState(false);
-  const [freshError, setFreshError] = useState<string | null>(null);
+  const serverRef = useMemo<BgZipRef | null>(() => {
+    if (!zipData) return null;
+    const file = zipData.zip.file;
+    if (file instanceof Blob) return localUpload && localUpload.file === file ? localUpload.ref : null;
+    return refOfRemoteSource(file);
+  }, [zipData, localUpload]);
 
-  /**
-   * Deletes the older files for this zip — the processed images saved on the server and the progress kept in this browser —
-   * so the run starts from nothing. A zip downloaded from Drive stays on the server (it has its own "Delete from server"
-   * button), and the logo and settings are untouched.
-   */
-  const startFresh = async () => {
-    setFreshBusy(true);
-    setFreshError(null);
-    const failed: string[] = [];
+  /** Hands the whole job to the server: the zip it already has, plus the settings and the list of images to change. */
+  const runOnServer = async () => {
+    setServerRunBusy(true);
+    setServerRunError(null);
     try {
-      const response = await fetch(`/api/bg-customiser/site?site=${encodeURIComponent(siteFolderName)}`, { method: "DELETE" });
-      if (!response.ok) failed.push("the results saved on the server");
-    } catch {
-      failed.push("the results saved on the server");
-    }
-    if (zipSignature) {
-      try {
-        await clearJob(zipSignature);
-      } catch {
-        failed.push("the saved progress");
+      let source = serverRef;
+      if (!source) {
+        const local = zipData?.zip.file;
+        if (local instanceof Blob) source = await startLocalUpload(local as File);
       }
+      if (!source) return;
+      const primaryPaths = new Set(selectedFiles.map((f) => f.path));
+      const secondaryPaths = new Set(secondaryFiles.map((f) => f.path));
+      const assets = new Map<string, Blob>();
+      let primary: StoredBackground;
+      if (backgroundConfig.kind === "image") {
+        assets.set("bg-a", backgroundConfig.image);
+        primary = toStoredBackground(backgroundConfig, "bg-a");
+      } else primary = backgroundConfig;
+      let secondary: StoredBackground;
+      if (secondaryBackgroundConfig.kind === "image") {
+        assets.set("bg-b", secondaryBackgroundConfig.image);
+        secondary = toStoredBackground(secondaryBackgroundConfig, "bg-b");
+      } else secondary = secondaryBackgroundConfig;
+      let logo: StoredLogo | undefined;
+      if (logoOverlay) {
+        assets.set("logo", logoOverlay.image);
+        logo = toStoredLogo(logoOverlay, "logo");
+      }
+      const spec: BgJobSpec = {
+        version: 1,
+        name: siteFolderName,
+        source,
+        items: processTargets.map((f) => ({
+          path: f.path,
+          mode: primaryPaths.has(f.path) ? "primary" : secondaryPaths.has(f.path) ? "secondary" : hasGlobalEdit ? "zoom-only" : "convert-only",
+          folder: f.folder,
+          position: f.index ?? 0,
+        })),
+        primary,
+        secondary,
+        foregroundZoom,
+        logo,
+        canvasShape,
+        textOverlay,
+        conversion,
+      };
+      await bgJobs.create(spec, assets);
+      setServerRunsKey((key) => key + 1);
+    } catch (err) {
+      setServerRunError(err instanceof Error ? err.message : "Couldn't start the run on the server.");
+    } finally {
+      setServerRunBusy(false);
     }
-    setFreshBusy(false);
-    if (failed.length > 0) {
-      setFreshError(`Couldn't delete ${failed.join(" and ")}. Nothing was started fresh — try again.`);
-      return;
-    }
-    setFreshOpen(false);
-    setSavedProgress(null);
   };
+
+  // ---- The page remembers its zip, selection and settings ON THE SERVER, so it comes back the same after any refresh or from any browser ----
+  const workspaceReady = useRef(false);
+  const restoreRef = useRef({ openZipSource, applyPersistedSettings });
+  useEffect(() => {
+    restoreRef.current = { openZipSource, applyPersistedSettings };
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    bgWorkspace
+      .load()
+      .then(async (saved) => {
+        if (cancelled || !saved) return;
+        const { openZipSource: open, applyPersistedSettings: apply } = restoreRef.current;
+        if (saved.settings) apply(saved.settings as PersistedBgCustomiserSettings);
+        if (!saved.zip) return;
+        await open(remoteSourceForRef(saved.zip.ref, saved.zip.name, saved.zip.size));
+        if (cancelled) return;
+        setSelectedIndices(new Set(saved.selectedIndices));
+        setSecondaryIndices(new Set(saved.secondaryIndices));
+        setManualOverridesA(new Map(saved.manualOverridesA));
+        if (saved.convertTo) setConvertTo(saved.convertTo as ConvertTo);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        workspaceReady.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceReady.current) return;
+    const timer = setTimeout(() => {
+      const file = zipData?.zip.file;
+      void bgWorkspace
+        .save({
+          zip: zipData && serverRef && file ? { ref: serverRef, name: file.name, size: file.size } : null,
+          selectedIndices: [...selectedIndices],
+          secondaryIndices: [...secondaryIndices],
+          manualOverridesA: [...manualOverridesA.entries()],
+          convertTo,
+          settings: {
+            foregroundZoomPercent,
+            canvasShape,
+            bgStateA: toPersistableBackgroundState(bgStateA),
+            bgStateB: toPersistableBackgroundState(bgStateB),
+            logoPosition,
+            logoCustomX,
+            logoCustomY,
+            logoSizePercent,
+            logoMarginPercent,
+          },
+        })
+        .catch(() => undefined);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [serverRef, zipData, selectedIndices, secondaryIndices, manualOverridesA, convertTo, foregroundZoomPercent, canvasShape, bgStateA, bgStateB, logoPosition, logoCustomX, logoCustomY, logoSizePercent, logoMarginPercent]);
 
   const clearZip = () => {
+    uploadAbortRef.current?.abort();
+    setLocalUpload(null);
     setZipData(null);
     setFiles(new Map());
     setSelectedIndices(new Set());
     setZipError(null);
-    setProcessError(null);
     setFoldersRevealed(false);
-    setZipSignature(null);
-    setSavedProgress(null);
     setSiteFolderName("site");
   };
 
-  const doneCount = useMemo(() => Array.from(files.values()).filter((f) => f.status === "done").length, [files]);
-  const errorCount = useMemo(() => Array.from(files.values()).filter((f) => f.status === "error").length, [files]);
-  const overallPercent = processTargets.length === 0 ? 0 : Math.round((doneCount / processTargets.length) * 100);
-  const processingPath = useMemo(() => Array.from(files.values()).find((f) => f.status === "processing")?.path ?? null, [files]);
 
   return (
     <Page
@@ -1348,29 +992,6 @@ export function BgCustomiserForm() {
         },
       ]}
     >
-      <Modal
-        open={freshOpen}
-        onClose={() => !freshBusy && setFreshOpen(false)}
-        title="Start fresh?"
-        primaryAction={{ content: "Delete files & start fresh", destructive: true, loading: freshBusy, onAction: () => void startFresh() }}
-        secondaryActions={[{ content: "Cancel", disabled: freshBusy, onAction: () => setFreshOpen(false) }]}
-      >
-        <Modal.Section>
-          <BlockStack gap="300">
-            <Text as="p">Starting fresh deletes the older files for this zip:</Text>
-            <BlockStack gap="100">
-              <Text as="p">• the processed images saved on the server for <b>{siteFolderName}</b> (all conversion variants)</Text>
-              <Text as="p">• the saved progress kept in this browser</Text>
-            </BlockStack>
-            <Text as="p" tone="subdued">
-              The zip itself, your logo and your settings are kept. A zip downloaded from Drive stays on the server until you press
-              &ldquo;Delete from server&rdquo;. Deleted files can&apos;t be brought back.
-            </Text>
-            {freshError && <Banner tone="critical"><p>{freshError}</p></Banner>}
-          </BlockStack>
-        </Modal.Section>
-      </Modal>
-
       <Modal open={howItWorksOpen} onClose={() => setHowItWorksOpen(false)} title="How the background customiser works">
         <Modal.Section>
           <BlockStack gap="400">
@@ -1406,6 +1027,9 @@ export function BgCustomiserForm() {
         </Modal.Section>
       </Modal>
       <Layout>
+        <Layout.Section>
+          <ServerRunsPanel refreshKey={serverRunsKey} />
+        </Layout.Section>
         <Layout.Section>
           <Card>
             <BlockStack gap="400">
@@ -1479,7 +1103,7 @@ export function BgCustomiserForm() {
                       </InlineStack>
                     </Box>
                   </InlineStack>
-                  <Button icon={DeleteIcon} onClick={clearZip} disabled={processing}>
+                  <Button icon={DeleteIcon} onClick={clearZip}>
                     Start over
                   </Button>
                 </InlineStack>
@@ -2081,159 +1705,10 @@ export function BgCustomiserForm() {
             <Layout.Section>
               <Card>
                 <BlockStack gap="400">
-                  <Text as="h2" variant="headingSm">Processing progress</Text>
-
-                  {savedProgress && (
-                    <Banner tone="info" title="Found saved progress for this zip">
-                      <BlockStack gap="200">
-                        <p>
-                          {`${savedProgress.doneCount.toLocaleString()} of ${savedProgress.totalCount.toLocaleString()} images `}
-                          {`(${Math.round((savedProgress.doneCount / savedProgress.totalCount) * 100)}%) were already updated before this was last `}
-                          interrupted — resume to pick up from there, or start fresh to delete the older files and redo everything. Resuming keeps
-                          already-processed images as-is even if settings changed since then.
-                        </p>
-                        <InlineStack gap="200">
-                          <Button onClick={() => void handleResumeProgress()} loading={resumingProgress} variant="primary">
-                            Resume
-                          </Button>
-                          <Button onClick={() => { setFreshError(null); setFreshOpen(true); }} disabled={resumingProgress}>
-                            Start fresh
-                          </Button>
-                        </InlineStack>
-                      </BlockStack>
-                    </Banner>
-                  )}
-
-                  <InlineGrid columns={{ xs: 2, sm: errorCount > 0 ? 4 : 3 }} gap="300">
-                    <Box background="bg-surface-secondary" padding="300" borderRadius="200">
-                      <BlockStack gap="150">
-                        <Icon source={ClockIcon} tone="subdued" />
-                        <Text as="p" variant="headingLg">{processTargets.length}</Text>
-                        <Text as="p" variant="bodySm" tone="subdued">To process</Text>
-                      </BlockStack>
-                    </Box>
-                    <Box background="bg-surface-magic" padding="300" borderRadius="200">
-                      <BlockStack gap="150">
-                        <Icon source={RefreshIcon} tone="magic" />
-                        <Text as="p" variant="headingLg">{overallPercent}%</Text>
-                        <Text as="p" variant="bodySm" tone="subdued">Overall progress</Text>
-                      </BlockStack>
-                    </Box>
-                    <Box background="bg-fill-success-secondary" padding="300" borderRadius="200">
-                      <BlockStack gap="150">
-                        <Icon source={CheckCircleIcon} tone="success" />
-                        <Text as="p" variant="headingLg">
-                          {doneCount}/{processTargets.length}
-                        </Text>
-                        <Text as="p" variant="bodySm" tone="subdued">Updated</Text>
-                      </BlockStack>
-                    </Box>
-                    {errorCount > 0 && (
-                      <Box background="bg-fill-critical-secondary" padding="300" borderRadius="200">
-                        <BlockStack gap="150">
-                          <Icon source={AlertCircleIcon} tone="critical" />
-                          <Text as="p" variant="headingLg">{errorCount}</Text>
-                          <Text as="p" variant="bodySm" tone="subdued">Couldn&apos;t update</Text>
-                        </BlockStack>
-                      </Box>
-                    )}
-                  </InlineGrid>
-
-                  <BlockStack gap="150">
-                    <ProgressBar progress={overallPercent} tone="primary" size="small" />
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      {processing
-                        ? `${overallPercent}% overall — ${doneCount} of ${processTargets.length} finished${
-                            processingPath ? `, updating ${files.get(processingPath)?.filename}` : ""
-                          }`
-                        : `${doneCount} of ${processTargets.length} finished`}
-                    </Text>
-                  </BlockStack>
-
-                  {serverSaveProgress && (
-                    <BlockStack gap="150">
-                      <ProgressBar
-                        progress={serverSaveProgress.total === 0 ? 0 : Math.round((serverSaveProgress.done / serverSaveProgress.total) * 100)}
-                        tone="primary"
-                        size="small"
-                      />
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        {`Saving to server — ${serverSaveProgress.done} of ${serverSaveProgress.total} images written to uploads/background-customiser/${outputSite}/. Already-saved files are skipped. Your download starts automatically once this reaches 100%.`}
-                      </Text>
-                    </BlockStack>
-                  )}
-
-                  {processError && (
-                    <Banner tone={doneCount > 0 ? "warning" : "critical"} onDismiss={() => setProcessError(null)}>
-                      <p>{processError}</p>
-                    </Banner>
-                  )}
-
-                  {failedResults.length > 0 && (
-                    <Banner tone="critical" title="These images couldn't be processed" onDismiss={() => setFailedResults([])}>
-                      <BlockStack gap="150">
-                        {failedResults.slice(0, 10).map((f) => (
-                          <BlockStack key={f.path} gap="050">
-                            <InlineStack gap="200" blockAlign="start" align="start" wrap={false}>
-                              <Badge tone={f.columnLabel === "Column A" ? "info" : f.columnLabel === "Column B" ? "success" : undefined}>{f.columnLabel}</Badge>
-                              <Text as="span" variant="bodySm" breakWord>
-                                <Text as="span" variant="bodySm" fontWeight="semibold">
-                                  {`${f.folder}${f.shot !== null ? ` · shot ${f.shot}` : ""}`}
-                                </Text>
-                                {` / ${f.filename}`}
-                              </Text>
-                            </InlineStack>
-                            <Text as="span" variant="bodySm" tone="critical">{f.message}</Text>
-                          </BlockStack>
-                        ))}
-                        {failedResults.length > 10 && (
-                          <Text as="span" variant="bodySm" tone="subdued">{`+ ${failedResults.length - 10} more`}</Text>
-                        )}
-                      </BlockStack>
-                    </Banner>
-                  )}
-
-                  {lastDownload && (
-                    <Banner tone="success" title="Zip downloaded">
-                      <BlockStack gap="200">
-                        <p>
-                          {lastDownload.filename} — {lastDownload.count} image{lastDownload.count === 1 ? "" : "s"}, streamed straight from
-                          uploads/background-customiser/{siteFolderName}/.
-                        </p>
-                        <InlineStack>
-                          <Button icon={ExportIcon} onClick={() => triggerUrlDownload(lastDownload.url)}>
-                            Download again
-                          </Button>
-                        </InlineStack>
-                      </BlockStack>
-                    </Banner>
-                  )}
-
-                  {outlierResults.length > 0 && (
-                    <Banner tone="warning" title="Some results look different from the rest of this batch" onDismiss={() => setOutlierResults([])}>
-                      <BlockStack gap="150">
-                        <p>
-                          {`${outlierResults.length.toLocaleString()} image${outlierResults.length === 1 ? "" : "s"} came out with a noticeably different background color than the rest — worth a quick check (a wrong column applied, a source photo that wasn't actually plain to begin with, or a logo/zoom overlap).`}
-                        </p>
-                        <BlockStack gap="100">
-                          {outlierResults.slice(0, 10).map((o) => (
-                            <InlineStack key={o.path} gap="200" blockAlign="start" align="start" wrap={false}>
-                              <Badge tone={o.column === "A" ? "info" : "success"}>{`Column ${o.column}`}</Badge>
-                              <Text as="span" variant="bodySm" breakWord>
-                                <Text as="span" variant="bodySm" fontWeight="semibold">
-                                  {`${o.folder}${o.shot !== null ? ` · shot ${o.shot}` : ""}`}
-                                </Text>
-                                {` / ${o.filename}`}
-                              </Text>
-                            </InlineStack>
-                          ))}
-                          {outlierResults.length > 10 && (
-                            <Text as="span" variant="bodySm" tone="subdued">{`+ ${outlierResults.length - 10} more`}</Text>
-                          )}
-                        </BlockStack>
-                      </BlockStack>
-                    </Banner>
-                  )}
+                  <Text as="h2" variant="headingSm">Run on the server</Text>
+                  <Text as="p" tone="subdued" variant="bodySm">
+                    {`${processTargets.length.toLocaleString()} image${processTargets.length === 1 ? "" : "s"} will be edited; every other image in the zip is copied across unchanged, so the download is a complete copy.`}
+                  </Text>
 
                   {conversion && (
                     <MediaConversionSettings
@@ -2242,7 +1717,7 @@ export function BgCustomiserForm() {
                       showReplaceMode={false}
                       hideFormat
                       title={`Convert to ${convertToLabel}`}
-                      description="Every image in the exported zip — edited and untouched alike — is converted with these settings, using the workers selected below."
+                      description="Every image in the exported zip — edited and untouched alike — is converted with these settings, on the server."
                     />
                   )}
 
@@ -2251,7 +1726,7 @@ export function BgCustomiserForm() {
                       <Select
                         label="Convert to"
                         labelInline
-                        disabled={processing || zipping}
+                        disabled={serverRunBusy}
                         options={CONVERT_TO_OPTIONS}
                         value={convertTo}
                         onChange={(value) => {
@@ -2262,46 +1737,48 @@ export function BgCustomiserForm() {
                         }}
                       />
                     </div>
-                    <div style={{ minWidth: 140 }}>
-                      <Select
-                        label="Workers"
-                        labelHidden
-                        disabled={processing || zipping}
-                        options={WORKER_COUNT_OPTIONS}
-                        value={String(workerCount)}
-                        onChange={(value) => setWorkerCount(Number(value))}
-                      />
-                    </div>
-                    {processing && (
-                      <Button tone="critical" onClick={cancelProcessing}>
-                        Cancel
-                      </Button>
-                    )}
-                    {zipping && (
-                      <Button tone="critical" onClick={cancelZipping}>
-                        Cancel
-                      </Button>
-                    )}
                     <Button
                       variant="primary"
                       icon={PaintBrushFlatIcon}
-                      loading={processing || zipping}
+                      loading={serverRunBusy}
                       disabled={
-                        processing ||
-                        zipping ||
+                        serverRunBusy ||
+                        !(serverRef || zipData?.zip.file instanceof Blob) ||
                         processTargets.length === 0 ||
                         (effectiveBgKind === "image" && !bgStateA.bgImageFile) ||
                         (effectiveSecondaryBgKind === "image" && !bgStateB.bgImageFile)
                       }
-                      onClick={processAll}
+                      onClick={() => void runOnServer()}
                     >
-                      {zipping
-                        ? "Zipping…"
-                        : processing
-                          ? `Updating… ${overallPercent}%`
-                          : `Apply & download (${processTargets.length})`}
+                      {serverRef ? `Run on server (${processTargets.length})` : `Upload zip & run on server (${processTargets.length})`}
                     </Button>
                   </InlineStack>
+
+                  {localUpload && !localUpload.ref && !localUpload.error && (
+                    <BlockStack gap="100">
+                      <ProgressBar progress={localUpload.progress.total ? (localUpload.progress.sent / localUpload.progress.total) * 100 : 0} size="small" tone="primary" />
+                      <InlineStack align="space-between" blockAlign="center" gap="300">
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          {`Uploading the zip to the server — ${localUpload.progress.total ? Math.floor((localUpload.progress.sent / localUpload.progress.total) * 100) : 0}% · ${formatUploadSize(localUpload.progress.sent)} of ${formatUploadSize(localUpload.progress.total)}`}
+                          {localUpload.progress.bytesPerSecond > 0 ? ` · ${formatUploadSize(localUpload.progress.bytesPerSecond)}/s` : ""}
+                          {localUpload.progress.etaSeconds !== null && localUpload.progress.etaSeconds > 0 ? ` · ${formatUploadEta(localUpload.progress.etaSeconds)} left` : ""}
+                          {localUpload.progress.alreadyThere > 0 ? ` · ${formatUploadSize(localUpload.progress.alreadyThere)} was already on the server` : ""}
+                        </Text>
+                        <Button variant="plain" tone="critical" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</Button>
+                      </InlineStack>
+                    </BlockStack>
+                  )}
+                  {localUpload?.error && <Banner tone="warning" title="The zip couldn't be saved on the server"><p>{localUpload.error}</p></Banner>}
+                  {serverRunError && <Banner tone="critical" onDismiss={() => setServerRunError(null)}><p>{serverRunError}</p></Banner>}
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Everything happens on the server, over the server&apos;s own internet connection: it reads the zip, edits the images and keeps the results. This page
+                    only sets things up and, at the end, downloads the finished zip.
+                  </Text>
+                  {serverRef && (
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {serverRef.kind === "drive" ? "This zip is on the server (from Google Drive)." : "This zip is saved on the server."} A run uses it from there, so you can close this page while it works.
+                    </Text>
+                  )}
 
                   <Divider />
 

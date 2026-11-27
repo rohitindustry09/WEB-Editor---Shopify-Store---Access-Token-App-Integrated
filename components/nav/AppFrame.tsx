@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ActionList, Icon, Popover } from "@shopify/polaris";
-import { ChevronRightIcon, LayoutSidebarLeftIcon, MenuHorizontalIcon, SearchIcon, SettingsIcon } from "@shopify/polaris-icons";
+import { ChevronRightIcon, LayoutSidebarLeftIcon, LockIcon, MenuHorizontalIcon, SearchIcon, SettingsIcon } from "@shopify/polaris-icons";
 import { signOutAction } from "@/app/(auth)/actions";
 import { PipelineGlobalWidget } from "@/app/(app)/tools/all-in-one/PipelineGlobalWidget";
 import { AnimatedIcon } from "@/components/motion/AnimatedIcon";
@@ -13,6 +13,8 @@ import { PageMotion } from "@/components/motion/PageMotion";
 import { ShellMotion, useSidebarMarker } from "@/components/motion/ShellMotion";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { CommandPalette } from "./CommandPalette";
+import { LoginGateProvider, LoginRequiredNotice, useLoginGate } from "./LoginGate";
+import { isOpenPage } from "@/lib/accessPolicy";
 import { StoreDomainProvider } from "./StoreContext";
 import { ErrorCenterProvider } from "@/components/errors/ErrorCenter";
 import { ErrorPanel } from "@/components/errors/ErrorPanel";
@@ -25,7 +27,7 @@ import { useSidebarCollapsed } from "./useSidebarCollapsed";
  * the current Shopify admin. The sidebar collapses to an icon-only rail (button, or
  * Ctrl/⌘ + B). On a phone it becomes a slide-in drawer.
  */
-export function AppFrame({
+function AppFrameInner({
   shopName,
   domain,
   children,
@@ -35,6 +37,7 @@ export function AppFrame({
   children: ReactNode;
 }) {
   const router = useRouter();
+  const { loggedIn, openLogin } = useLoginGate();
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -45,6 +48,15 @@ export function AppFrame({
 
   const current = activeNavUrl(pathname);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  // Everything except the free tools needs a connected store; a locked item opens the login popup instead of the page.
+  const isLocked = (url: string): boolean => !loggedIn && !isOpenPage(url);
+  const guard = (event: React.MouseEvent, url: string) => {
+    if (isLocked(url)) {
+      event.preventDefault();
+      openLogin();
+    }
+    closeDrawer();
+  };
 
   // Ctrl/⌘ + K opens the search, Ctrl/⌘ + B collapses the sidebar, Escape closes the phone drawer.
   useEffect(() => {
@@ -128,10 +140,12 @@ export function AppFrame({
                           data-active={isActive}
                           aria-current={isActive ? "page" : undefined}
                           title={item.label}
-                          onClick={closeDrawer}
+                          data-locked={isLocked(item.url)}
+                          onClick={(event) => guard(event, item.url)}
                         >
                           <span className="shell-item-icon"><AnimatedIcon source={item.icon} motion="wiggle" size={18} /></span>
                           <span className="shell-item-label">{item.label}</span>
+                          {isLocked(item.url) && <span className="shell-lock" aria-label="Log in required" style={{ marginLeft: "auto", display: "inline-flex", opacity: 0.65 }}><Icon source={LockIcon} tone="inherit" /></span>}
                         </Link>
                         {hasChildren && (
                           <button
@@ -158,7 +172,8 @@ export function AppFrame({
                                     className="shell-subitem"
                                     data-active={current === child.url}
                                     aria-current={current === child.url ? "page" : undefined}
-                                    onClick={closeDrawer}
+                                    data-locked={isLocked(child.url)}
+                                    onClick={(event) => guard(event, child.url)}
                                   >
                                     {child.label}
                                   </Link>
@@ -178,10 +193,19 @@ export function AppFrame({
 
         <div className="shell-bottom">
           <ThemeToggle />
-          <Link href="/settings/connection" className="shell-item has-icon-motion" data-active={current === "/settings/connection"} title="Settings" onClick={closeDrawer}>
+          <Link href="/settings/connection" className="shell-item has-icon-motion" data-active={current === "/settings/connection"} title="Settings" data-locked={isLocked("/settings/connection")} onClick={(event) => guard(event, "/settings/connection")}>
             <span className="shell-item-icon"><AnimatedIcon source={SettingsIcon} motion="spin" size={18} /></span>
             <span className="shell-item-label">Settings</span>
           </Link>
+          {!loggedIn ? (
+            <button type="button" className="shell-store" title="Log in with your Shopify store" onClick={openLogin}>
+              <span className="shell-avatar" aria-hidden="true"><Icon source={LockIcon} tone="inherit" /></span>
+              <span className="shell-store-text">
+                <span className="shell-store-name">Log in</span>
+                <span className="shell-store-domain">Connect your Shopify store</span>
+              </span>
+            </button>
+          ) : (
           <Popover
             active={storeMenuOpen}
             onClose={() => setStoreMenuOpen(false)}
@@ -225,6 +249,7 @@ export function AppFrame({
               ]}
             />
           </Popover>
+          )}
         </div>
       </aside>
 
@@ -244,7 +269,7 @@ export function AppFrame({
         <div className="shell-progress" aria-hidden="true" />
         <main className="shell-panel" id="main-content">
           {/* Keyed by the page, so every navigation replays the GSAP entrance. */}
-          <PageMotion key={pathname}>{children}</PageMotion>
+          <PageMotion key={pathname}>{!loggedIn && !isOpenPage(pathname) ? <LoginRequiredNotice /> : children}</PageMotion>
         </main>
       </div>
 
@@ -255,5 +280,28 @@ export function AppFrame({
     </div>
     </ErrorCenterProvider>
     </StoreDomainProvider>
+  );
+}
+
+/** The app shell. Open to everyone: pages that need a Shopify store show a login popup instead until one is connected. */
+export function AppFrame({
+  shopName,
+  domain,
+  loggedIn,
+  oauthReady,
+  children,
+}: {
+  shopName: string;
+  domain: string;
+  loggedIn: boolean;
+  oauthReady: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <LoginGateProvider loggedIn={loggedIn} oauthReady={oauthReady}>
+      <AppFrameInner shopName={shopName} domain={domain}>
+        {children}
+      </AppFrameInner>
+    </LoginGateProvider>
   );
 }

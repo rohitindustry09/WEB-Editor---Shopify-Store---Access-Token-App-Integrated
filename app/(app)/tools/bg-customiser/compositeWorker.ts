@@ -1,8 +1,5 @@
 import { readZipImage, type StreamingZipHandle } from "@/lib/skuMediaZip";
 import {
-  compositeBackground,
-  applyZoomAndLogo,
-  sampleCornerAverageColor,
   type BackgroundConfig,
   type ForegroundZoom,
   type LogoOverlay,
@@ -10,8 +7,8 @@ import {
   type TextOverlay,
   type AverageColor,
 } from "@/lib/backgroundComposite";
-import { processImage } from "@/lib/imageProcessing";
-import { applyRenamePattern, type WorkerConversion } from "@/lib/conversionSettings";
+import { renderItem } from "@/lib/bgItem";
+import type { WorkerConversion } from "@/lib/conversionSettings";
 
 /**
  * Runs inside a dedicated Web Worker (see `workerPool.ts`, which spawns
@@ -90,33 +87,11 @@ workerSelf.onmessage = async (event) => {
     try {
       const source = await readZipImage(zip, job.path);
       if (!source) throw new Error("Couldn't read this file from the zip.");
-      const isBackgroundJob = job.mode === "primary" || job.mode === "secondary";
-      const baseName = job.path.split("/").pop() ?? job.path;
-      let blob: Blob;
-      // What `processImage` is handed: the untouched source for a convert-only job, or the freshly composited PNG (named .png to match its bytes).
-      let current = { blob: source.blob, filename: baseName, mimeType: source.mimeType };
-      if (job.mode === "convert-only") {
-        blob = source.blob;
-      } else {
-        blob =
-          job.mode === "primary"
-            ? await compositeBackground(source.blob, primaryConfig, foregroundZoom, logo, canvasShape, textOverlay)
-            : job.mode === "secondary"
-              ? await compositeBackground(source.blob, secondaryConfig, foregroundZoom, logo, canvasShape, textOverlay)
-              : await applyZoomAndLogo(source.blob, foregroundZoom, logo, canvasShape, textOverlay);
-        current = { blob, filename: baseName.replace(/\.[a-zA-Z0-9]+$/, ".png"), mimeType: "image/png" };
-      }
-      // Only sampled for an actual background swap — a zoom-only image's
-      // corners are whatever the original photo had, not a color this
-      // batch chose, so it's not a meaningful thing to compare against the
-      // rest of a background-swap batch's outliers.
-      const avgColor = isBackgroundJob ? await sampleCornerAverageColor(blob).catch(() => undefined) : undefined;
-      let outputFilename: string | undefined;
-      if (conversion) {
-        const converted = await processImage(current, conversion.settings);
-        blob = converted.blob;
-        outputFilename = applyRenamePattern(conversion.renamePattern, converted.filename, job.folder ?? "", job.position ?? 0);
-      }
+      // The same function the server job runs, so a browser run and a server run can't produce different pictures.
+      const { blob, avgColor, outputFilename } = await renderItem(
+        { path: job.path, mode: job.mode, folder: job.folder, position: job.position, source },
+        { primaryConfig, secondaryConfig, foregroundZoom, logo, canvasShape, textOverlay, conversion },
+      );
       workerSelf.postMessage({ type: "result", path: job.path, blob, avgColor, outputFilename });
     } catch (err) {
       workerSelf.postMessage({ type: "error", path: job.path, message: err instanceof Error ? err.message : "Couldn't apply the background." });

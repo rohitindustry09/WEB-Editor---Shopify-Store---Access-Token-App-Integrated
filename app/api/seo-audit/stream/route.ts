@@ -1,4 +1,4 @@
-import { guardApi } from "@/lib/auth/apiGuard";
+import { guardOpen } from "@/lib/auth/openGuard";
 import { runStreamingAudit, InvalidDomainError, type AuditEvent } from "@/lib/seoAudit/runAudit";
 import { MAX_WORKERS } from "@/lib/seoAudit/constants";
 import { getLiveStoreInfo } from "@/lib/seoAudit/liveStore";
@@ -15,8 +15,9 @@ export const dynamic = "force-dynamic";
  * response instead, read on the client via `response.body.getReader()`.
  */
 export async function POST(request: Request) {
-  const denied = await guardApi(request);
-  if (denied) return denied;
+  const open = await guardOpen(request);
+  if (open.denied) return open.denied;
+  const visitor = open.visitor;
   let payload: { domain?: unknown; maxPages?: unknown; workers?: unknown; resume?: unknown };
   try {
     payload = await request.json();
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
         const typed = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
         const isOwnStore =
           !!live && (!typed || typed === live.shop.toLowerCase() || typed === live.host.toLowerCase().replace(/^www\./, "") || live.host.toLowerCase().endsWith(typed));
-        const report = await runStreamingAudit(domain || live?.host || "", emit, maxPages, isOwnStore ? live : null, workers, payload.resume === true ? "resume" : "fresh");
+        const report = await runStreamingAudit(domain || live?.host || "", emit, maxPages, isOwnStore ? live : null, workers, payload.resume === true ? "resume" : "fresh", visitor);
         controller.enqueue(encoder.encode(JSON.stringify({ type: "done", report }) + "\n"));
       } catch (err) {
         const message = err instanceof InvalidDomainError || err instanceof Error ? err.message : "Couldn't run the audit.";

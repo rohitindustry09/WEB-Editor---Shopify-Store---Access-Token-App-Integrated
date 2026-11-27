@@ -1,4 +1,4 @@
-import { guardApi } from "@/lib/auth/apiGuard";
+import { guardOpen } from "@/lib/auth/openGuard";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { mapWithConcurrency } from "@/lib/concurrency";
@@ -15,7 +15,9 @@ import { ZipStreamWriter, waitForDrain } from "@/lib/storeScraper/zipStream";
  * never holds more than a handful of files in memory at once, regardless
  * of how large the whole export is.
  */
-const UPLOADS_ROOT = path.join(process.cwd(), "uploads", "background-customiser");
+const UPLOADS_BASE = path.join(process.cwd(), "uploads", "background-customiser");
+/** Each anonymous visitor (browser) has its own folder, so nobody can see or delete anyone else's files. */
+const rootFor = (visitor: string): string => path.join(UPLOADS_BASE, visitor);
 
 const READ_CONCURRENCY = 8;
 
@@ -57,15 +59,16 @@ async function listSkuFiles(siteDir: string): Promise<SkuFile[]> {
 }
 
 export async function GET(request: Request) {
-  const denied = await guardApi(request);
-  if (denied) return denied;
+  const open = await guardOpen(request);
+  if (open.denied) return open.denied;
+  const visitor = open.visitor;
   const { searchParams } = new URL(request.url);
   const site = searchParams.get("site")?.trim();
   if (!site) return new Response("Missing ?site=.", { status: 400 });
 
-  const siteDir = path.resolve(UPLOADS_ROOT, sanitizeSegment(site));
+  const siteDir = path.resolve(rootFor(visitor), sanitizeSegment(site));
   // `..` survives the character strip, so an explicit containment check is what actually keeps this inside uploads/background-customiser/.
-  if (!siteDir.startsWith(UPLOADS_ROOT + path.sep)) return new Response("Invalid ?site=.", { status: 400 });
+  if (!siteDir.startsWith(rootFor(visitor) + path.sep)) return new Response("Invalid ?site=.", { status: 400 });
 
   // Converted output lives in its own per-settings folder (see BgCustomiserForm); `name` lets the download keep the clean site name instead.
   const downloadName = sanitizeSegment(searchParams.get("name") ?? "") || sanitizeSegment(site);

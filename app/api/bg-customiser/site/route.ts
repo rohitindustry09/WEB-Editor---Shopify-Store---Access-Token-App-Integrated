@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { guardApi } from "@/lib/auth/apiGuard";
+import { guardOpen } from "@/lib/auth/openGuard";
 
 export const dynamic = "force-dynamic";
 
-const UPLOADS_ROOT = path.join(process.cwd(), "uploads", "background-customiser");
+const UPLOADS_BASE = path.join(process.cwd(), "uploads", "background-customiser");
+/** Each anonymous visitor (browser) has its own folder, so nobody can see or delete anyone else's files. */
+const rootFor = (visitor: string): string => path.join(UPLOADS_BASE, visitor);
 /** The same characters the save route replaces when it builds a folder name. */
 const UNSAFE_PATH_CHARS = /[\\/:*?"<>|]/g;
 
@@ -15,8 +17,9 @@ const UNSAFE_PATH_CHARS = /[\\/:*?"<>|]/g;
  * Folder names come from listing the directory, never from the request, so nothing outside the uploads folder can be reached.
  */
 export async function DELETE(request: Request) {
-  const denied = await guardApi(request);
-  if (denied) return denied;
+  const open = await guardOpen(request);
+  if (open.denied) return open.denied;
+  const visitor = open.visitor;
 
   const site = new URL(request.url).searchParams.get("site")?.trim() ?? "";
   const segment = site.replace(UNSAFE_PATH_CHARS, "-").trim();
@@ -26,14 +29,14 @@ export async function DELETE(request: Request) {
 
   let entries: { name: string; isDirectory: () => boolean }[] = [];
   try {
-    entries = await readdir(UPLOADS_ROOT, { withFileTypes: true });
+    entries = await readdir(rootFor(visitor), { withFileTypes: true });
   } catch {
     return NextResponse.json({ ok: true, removed: [] }); // Nothing was ever saved.
   }
 
   const targets = entries.filter((entry) => entry.isDirectory() && (entry.name === segment || entry.name.startsWith(`${segment}__`)));
   try {
-    for (const target of targets) await rm(path.join(UPLOADS_ROOT, target.name), { recursive: true, force: true });
+    for (const target of targets) await rm(path.join(rootFor(visitor), target.name), { recursive: true, force: true });
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : "Couldn't delete the saved files." }, { status: 500 });
   }

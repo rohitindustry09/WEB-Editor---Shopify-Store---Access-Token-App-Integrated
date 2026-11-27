@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { guardApi } from "@/lib/auth/apiGuard";
+import { guardOpen } from "@/lib/auth/openGuard";
 import { DriveError } from "@/lib/driveFetch";
 import { listDriveJobs, startDriveJob } from "@/lib/driveJobs";
 import { parseDriveLink } from "@/lib/googleDrive";
@@ -8,9 +8,10 @@ export const dynamic = "force-dynamic";
 
 /** Every Google Drive download the server knows about — running, stopped or finished. */
 export async function GET(request: Request) {
-  const denied = await guardApi(request);
-  if (denied) return denied;
-  return NextResponse.json({ jobs: await listDriveJobs() });
+  const open = await guardOpen(request);
+  if (open.denied) return open.denied;
+  const visitor = open.visitor;
+  return NextResponse.json({ jobs: await listDriveJobs(visitor) });
 }
 
 /**
@@ -18,8 +19,9 @@ export async function GET(request: Request) {
  * this page stays open. A stopped download for the same file is resumed from what's already saved.
  */
 export async function POST(request: Request) {
-  const denied = await guardApi(request);
-  if (denied) return denied;
+  const open = await guardOpen(request);
+  if (open.denied) return open.denied;
+  const visitor = open.visitor;
 
   let body: { url?: unknown };
   try {
@@ -37,7 +39,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json({ job: await startDriveJob(url) });
+    return NextResponse.json({ job: await startDriveJob(url, visitor) });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Couldn't start the download.";
     return NextResponse.json({ error: message }, { status: err instanceof DriveError && err.fatal ? 422 : 500 });

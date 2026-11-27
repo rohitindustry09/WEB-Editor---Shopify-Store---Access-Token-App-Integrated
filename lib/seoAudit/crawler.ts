@@ -258,7 +258,7 @@ export interface CrawlOutcome {
  * bounded concurrency, emitting a `CrawlEvent` for every step so the UI can
  * show real-time progress instead of one spinner for the whole run.
  */
-export async function crawlSite(rawOrigin: string, cap: number, onEvent: EmitCrawlEvent, extraSeeds: string[] = [], workers = 0, mode: "resume" | "fresh" = "fresh"): Promise<CrawlOutcome> {
+export async function crawlSite(rawOrigin: string, cap: number, onEvent: EmitCrawlEvent, extraSeeds: string[] = [], workers = 0, mode: "resume" | "fresh" = "fresh", owner = ""): Promise<CrawlOutcome> {
   // Run the seed through the same URL normalization every resolved link
   // gets (`new URL(...).toString()`) — otherwise the bare origin as typed
   // (no trailing slash) and that exact same page reached via a resolved
@@ -283,7 +283,7 @@ export async function crawlSite(rawOrigin: string, cap: number, onEvent: EmitCra
   const seed = await discoverSeed(origin, originOnly, boundedCap, onEvent);
 
   // Saved progress: resume reuses every page that already has a final result; fresh deletes what was saved.
-  const site = siteKey(new URL(originOnly).hostname);
+  const site = siteKey(new URL(originOnly).hostname, owner);
   if (mode === "fresh") await clearCheckpoint(site);
   const loaded = mode === "resume" ? await loadRecords(site) : new Map<string, PageRecord>();
   if (loaded.size > 0) onEvent({ type: "checkpoint-loaded", cached: loaded.size });

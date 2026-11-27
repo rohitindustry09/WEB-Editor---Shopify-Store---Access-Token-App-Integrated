@@ -1,49 +1,44 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SHOP_COOKIE, TOKEN_COOKIE } from "@/lib/shopify/config";
 import { AUTH_COOKIE } from "@/lib/auth/cookie";
+import { VISITOR_COOKIE, VISITOR_HEADER, VISITOR_ID, VISITOR_MAX_AGE_SECONDS, isOpenPage, isPublicPage } from "@/lib/accessPolicy";
 
 /**
- * The connect wizard is the front door: you reach it without signing in, and pasting a store's access key
- * on its last step is what signs you in. (The handlers behind /api/connect and /api/disconnect check for themselves.)
- */
-const PUBLIC_PATHS = ["/connect", "/api/connect", "/api/disconnect", "/api/auth/shopify"];
-
-function matches(pathname: string, paths: string[]): boolean {
-  return paths.some((path) => pathname === path || pathname.startsWith(`${path}/`));
-}
-
-/**
- * Cheap gate that runs on the Edge: it can only check that the session cookies
- * are *present*, since verifying the signature needs Node crypto. The real
- * check happens in the app/connect layouts, which run on the server — this
- * exists so an unauthenticated request is bounced without paying for a full
- * server render first.
+ * The app is open: anyone can look around, and the free tools (see accessPolicy.ts) work without logging in. Two jobs here:
+ *
+ *  1. Give every browser an anonymous visitor ID (a cookie), and hand it to the server code in a header the proxy always
+ *     overwrites — so the free tools can keep each browser's runs, uploads and settings private without any account.
+ *  2. A Shopify page opened without a connected store is shown the "please log in" page instead (the address stays the same),
+ *     so no page is rendered — and no store data requested — for someone who isn't connected.
+ *
+ * This runs on the Edge, so it can only check that the session cookies are *present*. The real checks happen on the server:
+ * the layout verifies the signed cookie, and every Shopify API route verifies it again (guardApi).
  */
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (pathname === "/" || matches(pathname, PUBLIC_PATHS)) return NextResponse.next();
+  const existing = request.cookies.get(VISITOR_COOKIE)?.value;
+  const visitor = existing && VISITOR_ID.test(existing) ? existing : crypto.randomUUID();
+  const headers = new Headers(request.headers);
+  headers.set(VISITOR_HEADER, visitor);
 
-  if (!request.cookies.has(AUTH_COOKIE)) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/connect";
-    url.search = "";
-    return NextResponse.redirect(url);
+  const hasShopifySession = request.cookies.has(AUTH_COOKIE) && request.cookies.has(SHOP_COOKIE) && request.cookies.has(TOKEN_COOKIE);
+  const needsLogin = !hasShopifySession && !isPublicPage(pathname) && !isOpenPage(pathname);
+
+  const response = needsLogin ? NextResponse.rewrite(new URL("/login-required", request.url), { request: { headers } }) : NextResponse.next({ request: { headers } });
+  if (visitor !== existing) {
+    response.cookies.set(VISITOR_COOKIE, visitor, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: VISITOR_MAX_AGE_SECONDS,
+    });
   }
-
-  const hasShopifySession = request.cookies.has(SHOP_COOKIE) && request.cookies.has(TOKEN_COOKIE);
-  if (!hasShopifySession) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/connect";
-    url.search = "";
-    return NextResponse.redirect(url);
-  }
-
-  return NextResponse.next();
+  return response;
 }
 
 export const config = {
-  // Skips static assets and image requests entirely so the gate only runs on
-  // real navigations and API calls.
+  // Skips static assets and image requests entirely so this only runs on real navigations and API calls.
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|css|js|woff2?)$).*)"],
 };
