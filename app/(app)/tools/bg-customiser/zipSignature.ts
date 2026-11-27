@@ -10,7 +10,7 @@ import type { SkuMediaFolder } from "@/lib/skuMediaZip";
  * re-added, on the same or a different day", not to survive a
  * deliberately crafted collision.
  */
-export async function computeZipSignature(file: File, folders: SkuMediaFolder[]): Promise<string> {
+export async function computeZipSignature(file: { name: string; size: number }, folders: SkuMediaFolder[]): Promise<string> {
   const canonical = [
     file.name,
     String(file.size),

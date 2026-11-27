@@ -43,6 +43,7 @@ import {
   SearchIcon,
   ViewIcon,
   FolderIcon,
+  FileIcon,
 } from "@shopify/polaris-icons";
 import {
   loadSkuMediaZip,
@@ -50,6 +51,7 @@ import {
   isImageFilename,
   type SkuMediaFolder,
   type StreamingZipHandle,
+  type ZipSource,
 } from "@/lib/skuMediaZip";
 import {
   compositeBackground,
@@ -595,12 +597,8 @@ export function BgCustomiserForm() {
     };
   }, [previewSampleBlob, secondaryBackgroundConfig, effectiveSecondaryBgKind, bgStateB.bgImageFile, foregroundZoom, logoOverlay, canvasShape, textOverlay]);
 
-  const handleZipDrop = async (accepted: File[]) => {
-    const zipFile = accepted.find((f) => f.name.toLowerCase().endsWith(".zip"));
-    if (!zipFile) {
-      setZipError("That doesn't look like a zip file.");
-      return;
-    }
+  /** Opens a zip from either place it can come from: a file on this computer, or a copy saved on the server (a Drive download). */
+  const openZipSource = async (zipFile: ZipSource) => {
     setZipError(null);
     setLoadingZip(true);
     try {
@@ -661,6 +659,15 @@ export function BgCustomiserForm() {
     } finally {
       setLoadingZip(false);
     }
+  };
+
+  const handleZipDrop = async (accepted: File[]) => {
+    const zipFile = accepted.find((f) => f.name.toLowerCase().endsWith(".zip"));
+    if (!zipFile) {
+      setZipError("That doesn't look like a zip file.");
+      return;
+    }
+    await openZipSource(zipFile);
   };
 
   const handleResumeProgress = async () => {
@@ -1355,11 +1362,19 @@ export function BgCustomiserForm() {
                     <DropZone.FileUpload actionTitle="Add zip file" actionHint="or drop a .zip of product photo folders" />
                   )}
                 </DropZone>
-                <DriveLinkImport disabled={loadingZip} onFile={(file) => void handleZipDrop([file])} />
+                <DriveLinkImport disabled={loadingZip} onSource={(source) => void openZipSource(source)} />
                 </BlockStack>
               ) : (
                 <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
                   <InlineStack gap="300" blockAlign="center" wrap>
+                    <Box background="bg-surface-secondary" padding="300" borderRadius="200">
+                      <InlineStack gap="150" blockAlign="center">
+                        <Icon source={FileIcon} tone="subdued" />
+                        <Text as="span" fontWeight="semibold" breakWord>
+                          {siteFolderName}.zip
+                        </Text>
+                      </InlineStack>
+                    </Box>
                     <Box background="bg-surface-secondary" padding="300" borderRadius="200">
                       <InlineStack gap="150" blockAlign="center">
                         <Icon source={FolderIcon} tone="subdued" />

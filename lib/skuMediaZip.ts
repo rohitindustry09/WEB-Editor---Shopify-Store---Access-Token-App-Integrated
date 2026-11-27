@@ -23,6 +23,34 @@ const CENTRAL_DIR_SIGNATURE = 0x02014b50;
 const LOCAL_FILE_SIGNATURE = 0x04034b50;
 const MAX_EOCD_SEARCH = 65557; // 22-byte EOCD record + max 65535-byte comment
 
+/**
+ * A zip that lives on the server (a download saved from Google Drive), read lazily with HTTP range requests instead of
+ * being brought into the browser whole. Deliberately plain data — no methods — so it can still be posted to a web worker,
+ * exactly like a `File` can.
+ */
+export interface RemoteZipSource {
+  kind: "remote";
+  /** Same-origin address that serves the zip and honours `Range`. */
+  url: string;
+  size: number;
+  name: string;
+}
+
+/** Where a zip's bytes come from: a file picked on this computer, or a saved copy on the server. */
+export type ZipSource = File | RemoteZipSource;
+
+const isRemote = (source: ZipSource): source is RemoteZipSource => "kind" in source && source.kind === "remote";
+
+/** Bytes `[start, end)` of the zip as a Blob — a lazy slice for a local file, one range request for a server copy. */
+async function readRange(source: ZipSource, start: number, end: number): Promise<Blob> {
+  if (!isRemote(source)) return source.slice(start, end);
+  if (end <= start) return new Blob([]);
+  const response = await fetch(source.url, { headers: { Range: `bytes=${start}-${end - 1}` } });
+  const wholeFile = response.status === 200 && start === 0 && end >= source.size;
+  if (response.status !== 206 && !wholeFile) throw new Error(`The saved zip couldn't be read (the server answered ${response.status}).`);
+  return response.blob();
+}
+
 interface CentralDirEntry {
   path: string;
   compressedSize: number;
@@ -35,14 +63,14 @@ interface CentralDirEntry {
 }
 
 export interface StreamingZipHandle {
-  file: File;
+  file: ZipSource;
   entriesByPath: Map<string, CentralDirEntry>;
 }
 
-async function findEndOfCentralDirectory(file: File): Promise<{ cdOffset: number; cdSize: number; entryCount: number }> {
+async function findEndOfCentralDirectory(file: ZipSource): Promise<{ cdOffset: number; cdSize: number; entryCount: number }> {
   const searchSize = Math.min(file.size, MAX_EOCD_SEARCH);
   const tailStart = file.size - searchSize;
-  const tail = new Uint8Array(await file.slice(tailStart, file.size).arrayBuffer());
+  const tail = new Uint8Array(await (await readRange(file, tailStart, file.size)).arrayBuffer());
 
   for (let i = tail.length - 22; i >= 0; i--) {
     if (new DataView(tail.buffer, tail.byteOffset + i).getUint32(0, true) !== EOCD_SIGNATURE) continue;
@@ -59,11 +87,11 @@ async function findEndOfCentralDirectory(file: File): Promise<{ cdOffset: number
     if (entryCount === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) {
       const locatorOffset = tailStart + i - 20;
       if (locatorOffset >= 0) {
-        const locatorBuf = new Uint8Array(await file.slice(locatorOffset, locatorOffset + 20).arrayBuffer());
+        const locatorBuf = new Uint8Array(await (await readRange(file, locatorOffset, locatorOffset + 20)).arrayBuffer());
         const locatorView = new DataView(locatorBuf.buffer);
         if (locatorView.getUint32(0, true) === ZIP64_EOCD_LOCATOR_SIGNATURE) {
           const zip64Offset = Number(locatorView.getBigUint64(8, true));
-          const zip64Buf = new Uint8Array(await file.slice(zip64Offset, zip64Offset + 56).arrayBuffer());
+          const zip64Buf = new Uint8Array(await (await readRange(file, zip64Offset, zip64Offset + 56)).arrayBuffer());
           const zip64View = new DataView(zip64Buf.buffer);
           if (zip64View.getUint32(0, true) === ZIP64_EOCD_SIGNATURE) {
             entryCount = Number(zip64View.getBigUint64(32, true));
@@ -106,8 +134,8 @@ function readZip64Extra(entry: { compressedSize: number; uncompressedSize: numbe
   }
 }
 
-async function parseCentralDirectory(file: File, cdOffset: number, cdSize: number, entryCount: number): Promise<CentralDirEntry[]> {
-  const buf = new Uint8Array(await file.slice(cdOffset, cdOffset + cdSize).arrayBuffer());
+async function parseCentralDirectory(file: ZipSource, cdOffset: number, cdSize: number, entryCount: number): Promise<CentralDirEntry[]> {
+  const buf = new Uint8Array(await (await readRange(file, cdOffset, cdOffset + cdSize)).arrayBuffer());
   const decoder = new TextDecoder("utf-8");
   const entries: CentralDirEntry[] = [];
   let pos = 0;
@@ -153,8 +181,8 @@ async function parseCentralDirectory(file: File, cdOffset: number, cdSize: numbe
 }
 
 /** Locates an entry's compressed byte range by reading past its own local file header (whose filename/extra field lengths can differ slightly from the central directory's copy). Shared by the decompressing and raw-passthrough readers below — both need exactly this, nothing more. */
-async function locateEntryData(file: File, entry: CentralDirEntry): Promise<Blob> {
-  const headerBuf = new Uint8Array(await file.slice(entry.localHeaderOffset, entry.localHeaderOffset + 30).arrayBuffer());
+async function locateEntryData(file: ZipSource, entry: CentralDirEntry): Promise<Blob> {
+  const headerBuf = new Uint8Array(await (await readRange(file, entry.localHeaderOffset, entry.localHeaderOffset + 30)).arrayBuffer());
   const view = new DataView(headerBuf.buffer);
   if (view.getUint32(0, true) !== LOCAL_FILE_SIGNATURE) {
     throw new Error(`Corrupt zip entry "${entry.path}" — local file header signature mismatch.`);
@@ -162,10 +190,10 @@ async function locateEntryData(file: File, entry: CentralDirEntry): Promise<Blob
   const filenameLen = view.getUint16(26, true);
   const extraLen = view.getUint16(28, true);
   const dataStart = entry.localHeaderOffset + 30 + filenameLen + extraLen;
-  return file.slice(dataStart, dataStart + entry.compressedSize);
+  return readRange(file, dataStart, dataStart + entry.compressedSize);
 }
 
-async function readEntryBlob(file: File, entry: CentralDirEntry): Promise<Blob> {
+async function readEntryBlob(file: ZipSource, entry: CentralDirEntry): Promise<Blob> {
   const compressedBlob = await locateEntryData(file, entry);
 
   if (entry.compressionMethod === 0) {
@@ -229,7 +257,7 @@ export function guessImageMimeType(filename: string): string {
  * bytes are read until `readFolderImages` is called for a folder the user
  * actually chooses to work with.
  */
-export async function loadSkuMediaZip(file: File): Promise<{ zip: StreamingZipHandle; folders: SkuMediaFolder[] }> {
+export async function loadSkuMediaZip(file: ZipSource): Promise<{ zip: StreamingZipHandle; folders: SkuMediaFolder[] }> {
   const { cdOffset, cdSize, entryCount } = await findEndOfCentralDirectory(file);
   const entries = await parseCentralDirectory(file, cdOffset, cdSize, entryCount);
 
@@ -276,7 +304,7 @@ export async function loadSkuMediaZip(file: File): Promise<{ zip: StreamingZipHa
  * standalone media converter, which (unlike the product uploader) has no SKU
  * folders to group by, just "convert whatever's in here."
  */
-export async function loadImageZip(file: File): Promise<{ zip: StreamingZipHandle; imagePaths: string[] }> {
+export async function loadImageZip(file: ZipSource): Promise<{ zip: StreamingZipHandle; imagePaths: string[] }> {
   const { cdOffset, cdSize, entryCount } = await findEndOfCentralDirectory(file);
   const entries = await parseCentralDirectory(file, cdOffset, cdSize, entryCount);
 

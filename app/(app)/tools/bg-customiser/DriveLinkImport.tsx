@@ -1,84 +1,221 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Banner, BlockStack, Button, InlineStack, ProgressBar, Text, TextField } from "@shopify/polaris";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Badge, Banner, BlockStack, Box, Button, Icon, InlineStack, ProgressBar, Text, TextField } from "@shopify/polaris";
+import { FileIcon } from "@shopify/polaris-icons";
 import { formatFileSize } from "@/lib/csvSkuColors";
+import type { DriveJobSnapshot } from "@/lib/driveJobTypes";
+import { driveJobs, remoteSourceOf } from "@/lib/driveJobsApi";
 import { parseDriveLink } from "@/lib/googleDrive";
+import type { RemoteZipSource } from "@/lib/skuMediaZip";
 
-/** Reads a response body chunk by chunk so progress can be shown, then returns it as one file. */
-async function readAsFile(response: Response, onProgress: (received: number, total: number | null) => void): Promise<File> {
-  const total = Number(response.headers.get("content-length")) || null;
-  const rawName = response.headers.get("x-drive-filename");
-  let name = "drive-download.zip";
-  try {
-    if (rawName) name = decodeURIComponent(rawName);
-  } catch {
-    // Keep the default name.
-  }
-  if (!/\.zip$/i.test(name)) name = `${name}.zip`;
+const FAST_POLL_MS = 600;
+const SLOW_POLL_MS = 5000;
 
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("The download didn't start.");
-  const parts: BlobPart[] = [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parts.push(value as BlobPart);
-    received += value.byteLength;
-    onProgress(received, total);
-  }
-  return new File(parts, name, { type: "application/zip" });
+const isActive = (job: DriveJobSnapshot): boolean => job.status === "starting" || job.status === "downloading";
+const percentOf = (job: DriveJobSnapshot): number => (job.total ? Math.min(100, Math.floor((job.received / job.total) * 100)) : 0);
+
+function formatDuration(seconds: number): string {
+  const total = Math.max(1, Math.round(seconds));
+  if (total < 60) return `${total}s`;
+  if (total < 3600) return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s`;
+  return `${Math.floor(total / 3600)}h ${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}m`;
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <BlockStack gap="050">
+      <Text as="span" variant="bodySm" tone="subdued">{label}</Text>
+      <Text as="span" variant="headingSm">{value}</Text>
+    </BlockStack>
+  );
+}
+
+function FileHeading({ name, size, badge }: { name: string | null; size: number | null; badge: ReactNode }) {
+  return (
+    <InlineStack align="space-between" blockAlign="center" gap="300" wrap={false}>
+      <InlineStack gap="300" blockAlign="center" wrap={false}>
+        <Icon source={FileIcon} tone="subdued" />
+        <BlockStack gap="0">
+          <Text as="span" fontWeight="semibold" breakWord>{name ?? "Contacting Google Drive…"}</Text>
+          {size !== null && <Text as="span" variant="bodySm" tone="subdued">{formatFileSize(size)}</Text>}
+        </BlockStack>
+      </InlineStack>
+      {badge}
+    </InlineStack>
+  );
+}
+
+function Card({ children }: { children: ReactNode }) {
+  return (
+    <Box padding="400" background="bg-surface-secondary" borderRadius="300">
+      <BlockStack gap="400">{children}</BlockStack>
+    </Box>
+  );
+}
+
+/** A download that's running on the server: name, big percentage, bar, speed / time left / connections. */
+function RunningCard({ job, onPause }: { job: DriveJobSnapshot; onPause: () => void }) {
+  const starting = job.status === "starting";
+  const percent = percentOf(job);
+  return (
+    <Card>
+      <FileHeading name={job.name} size={job.total} badge={<Badge tone="info" progress="partiallyComplete">{starting ? "Connecting" : "Downloading on the server"}</Badge>} />
+      <BlockStack gap="200">
+        <InlineStack align="space-between" blockAlign="end">
+          <Text as="span" variant="heading2xl">{job.total ? `${percent}%` : "—"}</Text>
+          <Text as="span" tone="subdued">
+            {formatFileSize(job.received)}
+            {job.total ? ` of ${formatFileSize(job.total)}` : ""}
+          </Text>
+        </InlineStack>
+        <ProgressBar progress={starting ? 0 : percent} size="medium" tone="primary" animated />
+      </BlockStack>
+      <InlineStack gap="800" wrap>
+        <Stat label="Server speed" value={job.bytesPerSecond > 0 ? `${formatFileSize(job.bytesPerSecond)}/s` : "—"} />
+        <Stat label="Time left" value={job.etaSeconds !== null ? formatDuration(job.etaSeconds) : "—"} />
+        <Stat label="Connections" value={job.connections > 0 ? String(job.connections) : "—"} />
+      </InlineStack>
+      {job.resumedBytes > 0 && <Text as="p" variant="bodySm" tone="success">Resumed — {formatFileSize(job.resumedBytes)} was already saved on the server.</Text>}
+      <InlineStack align="space-between" blockAlign="center" gap="300">
+        <Text as="span" variant="bodySm" tone="subdued">The server is downloading this, so you can refresh or close the page — it keeps going.</Text>
+        <Button onClick={onPause}>Pause</Button>
+      </InlineStack>
+    </Card>
+  );
+}
+
+/** A download that isn't running: stopped part-way, failed, or finished and saved. */
+function RestingCard({ job, disabled, onUse, onResume, onDiscard }: { job: DriveJobSnapshot; disabled?: boolean; onUse: () => void; onResume: () => void; onDiscard: () => void }) {
+  const done = job.status === "done";
+  const failed = job.status === "error";
+  const percent = percentOf(job);
+  return (
+    <Card>
+      <FileHeading
+        name={job.name}
+        size={job.total}
+        badge={<Badge tone={done ? "success" : failed ? "critical" : "attention"}>{done ? "Saved on the server" : failed ? "Failed" : `Paused · ${percent}%`}</Badge>}
+      />
+      {!done && job.total && <ProgressBar progress={percent} size="small" tone={failed ? "critical" : "primary"} />}
+      {failed && job.error && <Banner tone="critical"><p>{job.error}</p></Banner>}
+      <Text as="p" variant="bodySm" tone="subdued">
+        {done
+          ? "Already on the server — open it any time without downloading it again."
+          : `${formatFileSize(job.received)}${job.total ? ` of ${formatFileSize(job.total)}` : ""} is saved on the server. Resuming fetches only the rest.`}
+      </Text>
+      <InlineStack gap="200">
+        {done ? (
+          <Button variant="primary" disabled={disabled} onClick={onUse}>Use this file</Button>
+        ) : (
+          <Button variant="primary" onClick={onResume}>{failed ? "Try again" : "Resume download"}</Button>
+        )}
+        <Button variant="plain" tone="critical" onClick={onDiscard}>{done ? "Delete from server" : "Discard"}</Button>
+      </InlineStack>
+    </Card>
+  );
 }
 
 /**
- * "Or paste a Google Drive link": downloads a public Drive zip through the server and hands it to the page exactly like a
- * file dropped from the computer. The file must be shared as "Anyone with the link".
+ * "Or add it from Google Drive": paste a share link and the SERVER downloads the file from Drive (several pieces at once),
+ * saves it on its own disk, and keeps going even if this page is closed. When it's finished the page opens the saved copy
+ * straight from the server — the zip never has to be downloaded into the browser. The file must be shared as
+ * "Anyone with the link".
  */
-export function DriveLinkImport({ onFile, disabled }: { onFile: (file: File) => void; disabled?: boolean }) {
+export function DriveLinkImport({ onSource, disabled }: { onSource: (source: RemoteZipSource) => void; disabled?: boolean }) {
   const [url, setUrl] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<{ received: number; total: number | null } | null>(null);
+  const [jobs, setJobs] = useState<DriveJobSnapshot[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  // The download started from this page: it opens by itself the moment it finishes.
+  const watchedId = useRef<string | null>(null);
+  const anyActive = useRef(false);
+  const onSourceRef = useRef(onSource);
 
-  const start = async () => {
-    const link = parseDriveLink(url);
-    if (link.kind === "folder") return setError("That's a folder link. Zip the folder first, then share the zip file.");
-    if (link.kind !== "file") return setError("That doesn't look like a Google Drive file link, e.g. https://drive.google.com/file/d/…/view");
+  useEffect(() => {
+    onSourceRef.current = onSource;
+  }, [onSource]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = () => {
+      driveJobs
+        .list()
+        .then((list) => {
+          if (cancelled) return;
+          setJobs(list);
+          anyActive.current = list.some(isActive);
+          const finished = list.find((job) => job.id === watchedId.current && job.status === "done");
+          if (finished) {
+            watchedId.current = null;
+            onSourceRef.current(remoteSourceOf(finished));
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled) timer = setTimeout(poll, anyActive.current ? FAST_POLL_MS : SLOW_POLL_MS);
+        });
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  const act = async (work: () => Promise<DriveJobSnapshot | void>) => {
     setError(null);
-    setBusy(true);
-    setProgress({ received: 0, total: null });
-    const controller = new AbortController();
-    abortRef.current = controller;
     try {
-      const response = await fetch("/api/gdrive/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `The server answered ${response.status}.`);
+      const job = await work();
+      if (job) {
+        setJobs((current) => [job, ...current.filter((existing) => existing.id !== job.id)]);
+        anyActive.current = isActive(job) || anyActive.current;
+        if (job.status === "done") {
+          watchedId.current = null;
+          onSourceRef.current(remoteSourceOf(job));
+        }
+      } else {
+        setJobs(await driveJobs.list());
       }
-      const file = await readAsFile(response, (received, total) => setProgress({ received, total }));
-      setUrl("");
-      onFile(file);
     } catch (err) {
-      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "The download failed.");
-    } finally {
-      abortRef.current = null;
-      setBusy(false);
-      setProgress(null);
+      setError(err instanceof Error ? err.message : "Something went wrong.");
     }
   };
 
+  const start = (link: string) =>
+    act(async () => {
+      const job = await driveJobs.start(link);
+      watchedId.current = job.id;
+      setUrl("");
+      return job;
+    });
+
+  const submit = () => {
+    const parsed = parseDriveLink(url);
+    if (parsed.kind === "folder") return setError("That's a folder link. Zip the folder first, then share the zip file.");
+    if (parsed.kind !== "file") return setError("That doesn't look like a Google Drive file link, e.g. https://drive.google.com/file/d/…/view");
+    void start(url.trim());
+  };
+
   return (
-    <BlockStack gap="200">
+    <BlockStack gap="300">
+      {jobs.map((job) =>
+        isActive(job) ? (
+          <RunningCard key={job.id} job={job} onPause={() => void act(() => driveJobs.pause(job.id))} />
+        ) : (
+          <RestingCard
+            key={job.id}
+            job={job}
+            disabled={disabled}
+            onUse={() => onSourceRef.current(remoteSourceOf(job))}
+            onResume={() => void start(job.url)}
+            onDiscard={() => void act(() => driveJobs.discard(job.id))}
+          />
+        ),
+      )}
+
       <Text as="p" variant="bodySm" tone="subdued">
-        Or add it from Google Drive — paste the file&apos;s share link (it must be shared as &ldquo;Anyone with the link&rdquo;).
+        Or add it from Google Drive — paste the file&apos;s share link (it must be shared as &ldquo;Anyone with the link&rdquo;). The server downloads and saves it.
       </Text>
       <InlineStack gap="200" blockAlign="end" wrap={false}>
         <div style={{ flex: 1 }}>
@@ -89,26 +226,13 @@ export function DriveLinkImport({ onFile, disabled }: { onFile: (file: File) => 
             value={url}
             onChange={setUrl}
             autoComplete="off"
-            disabled={busy || disabled}
+            disabled={disabled}
             clearButton
             onClearButtonClick={() => setUrl("")}
           />
         </div>
-        {busy ? (
-          <Button tone="critical" onClick={() => abortRef.current?.abort()}>Cancel</Button>
-        ) : (
-          <Button variant="primary" disabled={disabled || url.trim() === ""} onClick={() => void start()}>Add from Drive</Button>
-        )}
+        <Button variant="primary" disabled={disabled || url.trim() === ""} onClick={submit}>Download on server</Button>
       </InlineStack>
-      {busy && progress && (
-        <BlockStack gap="100">
-          <ProgressBar progress={progress.total ? (progress.received / progress.total) * 100 : 0} size="small" />
-          <Text as="span" variant="bodySm" tone="subdued">
-            Downloading from Drive… {formatFileSize(progress.received)}
-            {progress.total ? ` of ${formatFileSize(progress.total)}` : ""}
-          </Text>
-        </BlockStack>
-      )}
       {error && <Banner tone="warning" onDismiss={() => setError(null)}><p>{error}</p></Banner>}
     </BlockStack>
   );
