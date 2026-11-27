@@ -1,6 +1,6 @@
 import "server-only";
-import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { openAsBlob } from "node:fs";
+import { appendFile, mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { createWriteStream, openAsBlob } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { renderItem, outputPathFor, type BgItemConfig } from "./bgItem";
@@ -10,6 +10,7 @@ import type { BackgroundConfig, LogoOverlay } from "./backgroundComposite";
 import { installServerCanvas } from "./serverCanvas";
 import { loadSkuMediaZip, readFolderImages, readZipImage } from "./skuMediaZip";
 import { resolveZip } from "./serverZips";
+import { ZipStreamWriter } from "./storeScraper/zipStream";
 
 /**
  * Background customiser runs that live ON THE SERVER. A run is saved as files under `uploads/bg-jobs/<id>/`: its settings
@@ -34,6 +35,10 @@ const donePath = (id: string) => path.join(dirOf(id), "done.log");
 const copiedPath = (id: string) => path.join(dirOf(id), "copied.log");
 const assetPath = (id: string, assetId: string) => path.join(dirOf(id), "assets", assetId);
 export const bgJobOutputDir = (id: string) => path.join(dirOf(id), "out");
+const resultZipPath = (id: string) => path.join(dirOf(id), "result.zip");
+const resultMetaPath = (id: string) => path.join(dirOf(id), "result.json");
+/** Free space that must remain after the download zip is packed. */
+const ZIP_DISK_MARGIN_BYTES = 256 * 1024 ** 2;
 
 interface PersistedState {
   /** The anonymous visitor (browser) this run belongs to; nobody else can see, cancel, download or delete it. */
@@ -47,6 +52,12 @@ interface PersistedState {
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+  /** Size of the packed download zip once it is ready (see ensureResultZip). */
+  zipBytes?: number | null;
+  /** Copies of what the list view shows, so it can be built from this small file alone (the spec and logs can be megabytes). */
+  name?: string;
+  doneCount?: number;
+  copiedCount?: number;
 }
 
 interface Run {
@@ -63,9 +74,29 @@ interface Run {
   writeTimer: ReturnType<typeof setTimeout> | null;
 }
 
-const globalState = globalThis as typeof globalThis & { __bgJobs?: { runs: Map<string, Run>; queue: string[]; pumping: boolean } };
+interface Registry {
+  runs: Map<string, Run>;
+  queue: string[];
+  pumping: boolean;
+  /** Which visitor owns each run — it never changes, so after the first look no other visitor's run is ever opened again. */
+  owners: Map<string, string>;
+  /** The list-view snapshot of each FINISHED run (it can't change any more). */
+  snapshots: Map<string, BgJobSnapshot>;
+  /** Download zips being packed right now, and why one failed. Packing is one at a time: it is disk-heavy. */
+  zipBuilds: Map<string, Promise<void>>;
+  zipFailures: Map<string, string>;
+  zipQueue: Promise<unknown>;
+}
+
+const globalState = globalThis as typeof globalThis & { __bgJobs?: Registry };
 /** On globalThis so every route module (and hot reloads in dev) share the same runs. */
-const registry = (globalState.__bgJobs ??= { runs: new Map<string, Run>(), queue: [], pumping: false });
+const registry = (globalState.__bgJobs ??= { runs: new Map<string, Run>(), queue: [], pumping: false, owners: new Map<string, string>(), snapshots: new Map<string, BgJobSnapshot>(), zipBuilds: new Map<string, Promise<void>>(), zipFailures: new Map<string, string>(), zipQueue: Promise.resolve() });
+// A server that was running the previous code keeps its old registry object across a hot reload; give it the new caches.
+registry.owners ??= new Map<string, string>();
+registry.snapshots ??= new Map<string, BgJobSnapshot>();
+registry.zipBuilds ??= new Map<string, Promise<void>>();
+registry.zipFailures ??= new Map<string, string>();
+registry.zipQueue ??= Promise.resolve();
 
 const cleanSegment = (value: string): string => {
   const cleaned = value.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-").trim();
@@ -87,7 +118,8 @@ async function readLines(file: string): Promise<Set<string>> {
 
 async function writeState(run: Run): Promise<void> {
   const temp = `${statePath(run.id)}.tmp`;
-  await writeFile(temp, JSON.stringify(run.state));
+  const saved: PersistedState = { ...run.state, name: run.spec.name, doneCount: run.done.size, copiedCount: run.copied.size };
+  await writeFile(temp, JSON.stringify(saved));
   await rename(temp, statePath(run.id));
 }
 
@@ -125,6 +157,7 @@ function snapshotOf(run: Run): BgJobSnapshot {
     finishedAt: run.state.finishedAt,
     itemsPerSecond: run.state.status === "running" ? Math.max(0, itemsPerSecond) : 0,
     etaSeconds: run.state.status === "running" && itemsPerSecond > 0.01 ? remaining / itemsPerSecond : null,
+    ...downloadFields(run.id, run.state),
   };
 }
 
@@ -255,6 +288,7 @@ async function runJob(run: Run): Promise<void> {
     run.running = false;
     run.state.finishedAt = Date.now();
     await writeState(run).catch(() => undefined);
+    if (run.state.status === "done" || run.state.status === "cancelled") void ensureResultZip(run.id);
   }
 }
 
@@ -349,14 +383,82 @@ export async function createBgJob(spec: BgJobSpec, assets: Map<string, Uint8Arra
   return snapshotOf(run);
 }
 
-export async function getBgJob(id: string, owner: string): Promise<BgJobSnapshot | null> {
+const isFinished = (status: BgJobStatus): boolean => status === "done" || status === "cancelled" || status === "error";
+
+/** Only the small state file — never the spec or the logs, which can be megabytes. */
+async function peekState(id: string): Promise<PersistedState | null> {
+  try {
+    return JSON.parse(await readFile(statePath(id), "utf-8")) as PersistedState;
+  } catch {
+    return null;
+  }
+}
+
+/** The list-view snapshot of a finished run, built from its state file alone. Null for runs saved before those fields existed. */
+function snapshotFromState(id: string, state: PersistedState): BgJobSnapshot | null {
+  if (state.name === undefined || state.doneCount === undefined || state.copiedCount === undefined) return null;
+  return {
+    id,
+    name: state.name,
+    status: state.status,
+    total: state.total,
+    done: state.doneCount,
+    failed: state.failed,
+    copied: state.copiedCount,
+    copyTotal: state.copyTotal,
+    current: null,
+    error: state.error,
+    failures: state.failures,
+    createdAt: state.createdAt,
+    startedAt: state.startedAt,
+    finishedAt: state.finishedAt,
+    itemsPerSecond: 0,
+    etaSeconds: null,
+    ...downloadFields(id, state),
+  };
+}
+
+async function lookupBgJob(id: string, owner: string): Promise<BgJobSnapshot | null> {
   const live = registry.runs.get(id);
   if (live) return live.state.owner === owner ? snapshotOf(live) : null;
+
+  // Somebody else's run: answered from memory after the first look, without touching its files.
+  const knownOwner = registry.owners.get(id);
+  if (knownOwner !== undefined && knownOwner !== owner) return null;
+  const cached = registry.snapshots.get(id);
+  if (cached) return cached;
+
+  const state = await peekState(id);
+  if (!state) return null;
+  registry.owners.set(id, state.owner);
+  if (state.owner !== owner) return null;
+  if (isFinished(state.status)) {
+    const snapshot = snapshotFromState(id, state);
+    if (snapshot) {
+      // Remembered only once the download is ready: until then the list has to keep seeing the zip being packed.
+      if (snapshot.download === "ready") registry.snapshots.set(id, snapshot);
+      return snapshot;
+    }
+  }
+
   const run = await loadRun(id);
   if (!run || run.state.owner !== owner) return null;
   // A finished run never changes again, so keep it in memory — otherwise every poll re-reads its (possibly huge) files from disk.
   if (run.state.status === "done" || run.state.status === "cancelled" || run.state.status === "error") registry.runs.set(id, run);
   return snapshotOf(run);
+}
+
+/**
+ * One run's snapshot. A finished run that has results but no download zip yet — for example one finished before downloads were
+ * packed into a file — gets its zip packed the first time it is looked at, and is reported as "preparing" straight away.
+ */
+export async function getBgJob(id: string, owner: string): Promise<BgJobSnapshot | null> {
+  const snapshot = await lookupBgJob(id, owner);
+  if (snapshot && snapshot.download === "none" && isFinished(snapshot.status) && snapshot.done + snapshot.copied > 0) {
+    void ensureResultZip(id);
+    return { ...snapshot, download: "preparing" };
+  }
+  return snapshot;
 }
 
 export async function listBgJobs(owner: string): Promise<BgJobSnapshot[]> {
@@ -395,15 +497,155 @@ export async function deleteBgJob(id: string, owner: string): Promise<void> {
   if (!JOB_ID.test(id) || !(await getBgJob(id, owner))) return;
   await cancelBgJob(id, owner);
   registry.runs.delete(id);
+  registry.owners.delete(id);
+  registry.snapshots.delete(id);
+  registry.zipFailures.delete(id);
   await rm(dirOf(id), { recursive: true, force: true });
 }
 
-/** Where a run's results are, and what to call the downloaded zip. */
-export async function bgJobDownload(id: string, owner: string): Promise<{ dir: string; name: string; hasFiles: boolean } | null> {
+/** What the page is told about a run's download. */
+function downloadFields(id: string, state: PersistedState): Pick<BgJobSnapshot, "download" | "downloadBytes" | "downloadError"> {
+  const running = state.status === "queued" || state.status === "running";
+  if (running) return { download: "none", downloadBytes: null, downloadError: null };
+  if (registry.zipBuilds.has(id)) return { download: "preparing", downloadBytes: null, downloadError: null };
+  if (state.zipBytes) return { download: "ready", downloadBytes: state.zipBytes, downloadError: null };
+  const failure = registry.zipFailures.get(id);
+  if (failure) return { download: "failed", downloadBytes: null, downloadError: failure };
+  return { download: "none", downloadBytes: null, downloadError: null };
+}
+
+interface OutputFile {
+  folder: string;
+  filename: string;
+  fullPath: string;
+  size: number;
+}
+
+/** Every finished image of a run, as `<SKU>/<file>`. */
+async function listOutputFiles(root: string): Promise<OutputFile[]> {
+  const files: OutputFile[] = [];
+  let folders: string[];
+  try {
+    folders = await readdir(root);
+  } catch {
+    return files;
+  }
+  for (const folder of folders) {
+    const folderPath = path.join(root, folder);
+    if (!(await stat(folderPath).catch(() => null))?.isDirectory()) continue;
+    for (const filename of await readdir(folderPath).catch(() => [] as string[])) {
+      if (filename.endsWith(".tmp")) continue; // a write that was still in progress
+      const fullPath = path.join(folderPath, filename);
+      const info = await stat(fullPath).catch(() => null);
+      if (info?.isFile()) files.push({ folder, filename, fullPath, size: info.size });
+    }
+  }
+  return files;
+}
+
+/** Packs a run's results into ONE real zip file (store-only: images are already compressed), written to disk, never held in memory. */
+async function buildResultZip(id: string): Promise<number> {
+  const files = await listOutputFiles(bgJobOutputDir(id));
+  if (files.length === 0) throw new Error("There are no finished images to download yet.");
+  const total = files.reduce((sum, file) => sum + file.size, 0);
+  const signature = `${files.length}:${total}`;
+
+  // Already packed from exactly these files (e.g. after a restart): nothing to do.
+  try {
+    const meta = JSON.parse(await readFile(resultMetaPath(id), "utf-8")) as { signature?: string };
+    if (meta.signature === signature) return (await stat(resultZipPath(id))).size;
+  } catch {
+    // Not packed yet.
+  }
+
+  const stats = await statfs(dirOf(id));
+  const free = stats.bavail * stats.bsize;
+  if (free < total + ZIP_DISK_MARGIN_BYTES) {
+    const gb = (n: number) => `${(n / 1024 ** 3).toFixed(1)} GB`;
+    throw new Error(`Not enough free disk space on the server to pack the download: it needs about ${gb(total + ZIP_DISK_MARGIN_BYTES)} and only ${gb(free)} is free.`);
+  }
+
+  const temp = `${resultZipPath(id)}.tmp`;
+  const out = createWriteStream(temp);
+  const write = (chunk: Uint8Array) =>
+    new Promise<void>((resolve, reject) => {
+      out.write(chunk, (err) => (err ? reject(err) : resolve()));
+    });
+  const writer = new ZipStreamWriter();
+  try {
+    for (const file of files) {
+      await write(writer.addEntry(`${file.folder}/${file.filename}`, new Uint8Array(await readFile(file.fullPath))));
+      await yieldToEventLoop();
+    }
+    await write(writer.finish());
+    await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())));
+  } catch (err) {
+    out.destroy();
+    await rm(temp, { force: true });
+    throw err;
+  }
+  await rename(temp, resultZipPath(id));
+  await writeFile(resultMetaPath(id), JSON.stringify({ signature, builtAt: Date.now() }));
+  return (await stat(resultZipPath(id))).size;
+}
+
+/** Records that a run's download zip exists, in memory and in its state file. */
+async function markZipReady(id: string, bytes: number): Promise<void> {
+  const live = registry.runs.get(id);
+  if (live) {
+    live.state.zipBytes = bytes;
+    await writeState(live).catch(() => undefined);
+  } else {
+    const state = await peekState(id);
+    if (state) {
+      const temp = `${statePath(id)}.tmp`;
+      await writeFile(temp, JSON.stringify({ ...state, zipBytes: bytes }));
+      await rename(temp, statePath(id));
+    }
+  }
+  registry.snapshots.delete(id);
+}
+
+/**
+ * Packs a finished (or cancelled) run's results into its download zip, one pack at a time. Called when a run ends, when the
+ * server starts, and the first time a finished run without a zip is looked at — so the Download button only ever appears for
+ * a file that is complete and has a known size.
+ */
+export function ensureResultZip(id: string): Promise<void> {
+  const existing = registry.zipBuilds.get(id);
+  if (existing) return existing;
+  registry.zipFailures.delete(id);
+  const job = registry.zipQueue.then(async () => {
+    try {
+      await markZipReady(id, await buildResultZip(id));
+    } catch (err) {
+      registry.zipFailures.set(id, err instanceof Error ? err.message : "Couldn't pack the download.");
+    } finally {
+      registry.zipBuilds.delete(id);
+    }
+  });
+  registry.zipBuilds.set(id, job);
+  registry.zipQueue = job;
+  return job;
+}
+
+/** Packs the download again after a failure (for example once disk space has been freed). */
+export async function retryBgJobZip(id: string, owner: string): Promise<BgJobSnapshot | null> {
+  if (!(await getBgJob(id, owner))) return null;
+  void ensureResultZip(id);
+  return getBgJob(id, owner);
+}
+
+/** The ready download zip of a run, with what is needed to serve it resumably. Null when it isn't ready. */
+export async function bgJobZip(id: string, owner: string): Promise<{ path: string; size: number; name: string; modified: Date } | null> {
   const snapshot = await getBgJob(id, owner);
-  if (!snapshot) return null;
-  const hasFiles = await stat(bgJobOutputDir(id)).then((s) => s.isDirectory()).catch(() => false);
-  return { dir: bgJobOutputDir(id), name: snapshot.name, hasFiles };
+  if (!snapshot || snapshot.download !== "ready") return null;
+  try {
+    const info = await stat(resultZipPath(id));
+    return { path: resultZipPath(id), size: info.size, name: snapshot.name, modified: info.mtime };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -420,6 +662,8 @@ export async function resumeBgJobs(): Promise<number> {
   let resumed = 0;
   for (const id of ids.sort()) {
     if (registry.runs.has(id)) continue;
+    const peek = await peekState(id);
+    if (peek && isFinished(peek.status) && !peek.zipBytes && peek.owner) void ensureResultZip(id);
     const run = await loadRun(id);
     if (!run || (run.state.status !== "running" && run.state.status !== "queued")) continue;
     run.state.status = "queued";

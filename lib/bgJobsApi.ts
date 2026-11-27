@@ -14,6 +14,8 @@ const json = (method: string, body: unknown): RequestInit => ({ method, headers:
 export const bgJobs = {
   list: async (): Promise<BgJobSnapshot[]> => (await call<{ jobs: BgJobSnapshot[] }>("/api/bg-jobs")).jobs,
   cancel: async (id: string): Promise<BgJobSnapshot> => (await call<{ job: BgJobSnapshot }>(`/api/bg-jobs/${encodeURIComponent(id)}`, json("PATCH", { action: "cancel" }))).job,
+  /** Packs the download zip again after it failed (for example once disk space has been freed). */
+  prepare: async (id: string): Promise<BgJobSnapshot> => (await call<{ job: BgJobSnapshot }>(`/api/bg-jobs/${encodeURIComponent(id)}`, json("PATCH", { action: "prepare" }))).job,
   remove: async (id: string): Promise<void> => {
     await call<{ ok: boolean }>(`/api/bg-jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
   },

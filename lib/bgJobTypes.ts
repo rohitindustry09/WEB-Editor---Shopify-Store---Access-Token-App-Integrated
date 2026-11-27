@@ -77,6 +77,13 @@ export interface BgJobSnapshot {
   /** Finished images per second, over the last few seconds. */
   itemsPerSecond: number;
   etaSeconds: number | null;
+  /**
+   * The download is one real zip file, packed once on the server when the run ends — so it has a known size and can be
+   * resumed. "none" = nothing to download (yet); "preparing" = being packed; "ready" = download it; "failed" = see `downloadError`.
+   */
+  download: "none" | "preparing" | "ready" | "failed";
+  downloadBytes: number | null;
+  downloadError: string | null;
 }
 
 export const ASSET_ID = /^[A-Za-z0-9_-]{1,64}$/;

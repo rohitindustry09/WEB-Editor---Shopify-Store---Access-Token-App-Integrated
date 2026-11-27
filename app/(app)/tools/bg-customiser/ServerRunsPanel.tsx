@@ -2,15 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Badge, Banner, BlockStack, Box, Button, Card, InlineStack, Modal, ProgressBar, Text } from "@shopify/polaris";
+import { formatFileSize } from "@/lib/csvSkuColors";
 import { bgJobs } from "@/lib/bgJobsApi";
 import type { BgJobSnapshot, BgJobStatus } from "@/lib/bgJobTypes";
 
-const FAST_POLL_MS = 800;
-const SLOW_POLL_MS = 5000;
+/** How often progress is asked for: often while something runs, rarely otherwise, and hardly at all while the tab is hidden. */
+const FAST_POLL_MS = 1500;
+const SLOW_POLL_MS = 10_000;
+const HIDDEN_POLL_MS = 30_000;
 const FAILURES_SHOWN = 8;
 
 const isLive = (job: BgJobSnapshot): boolean => job.status === "queued" || job.status === "running";
-const hasResults = (job: BgJobSnapshot): boolean => job.done + job.copied > 0;
 
 function formatDuration(seconds: number): string {
   const total = Math.max(1, Math.round(seconds));
@@ -34,7 +36,7 @@ function stepOf(job: BgJobSnapshot): { label: string; done: number; total: numbe
   return { label: job.copyTotal > 0 ? "Copying the rest unchanged" : "Done", done: job.copied, total: job.copyTotal };
 }
 
-function RunCard({ job, onCancel, onDelete }: { job: BgJobSnapshot; onCancel: () => void; onDelete: () => void }) {
+function RunCard({ job, onCancel, onDelete, onRetryDownload }: { job: BgJobSnapshot; onCancel: () => void; onDelete: () => void; onRetryDownload: () => void }) {
   const badge = STATUS_BADGE[job.status];
   const step = stepOf(job);
   const percent = step.total > 0 ? Math.min(100, Math.floor((step.done / step.total) * 100)) : job.status === "done" ? 100 : 0;
@@ -76,6 +78,10 @@ function RunCard({ job, onCancel, onDelete }: { job: BgJobSnapshot; onCancel: ()
         {job.status === "running" && job.current && (
           <Text as="p" variant="bodySm" tone="subdued" truncate>{job.current}</Text>
         )}
+        {job.download === "preparing" && (
+          <Text as="p" variant="bodySm" tone="subdued">Packing the finished images into one zip on the server (once). The download starts the moment it&apos;s ready, and if your connection drops it can be resumed.</Text>
+        )}
+        {job.download === "failed" && job.downloadError && <Banner tone="critical"><p>{job.downloadError}</p></Banner>}
         {live && <Text as="p" variant="bodySm" tone="subdued">The server is doing this work, so you can close this page — it keeps going until it finishes or you cancel.</Text>}
         {job.error && <Banner tone="critical"><p>{job.error}</p></Banner>}
         {job.failures.length > 0 && (
@@ -91,11 +97,13 @@ function RunCard({ job, onCancel, onDelete }: { job: BgJobSnapshot; onCancel: ()
 
         <InlineStack gap="200">
           {live && <Button tone="critical" onClick={onCancel}>Cancel</Button>}
-          {hasResults(job) && (
-            <Button variant="primary" url={bgJobs.downloadUrl(job.id)} target="_blank" download>
-              {job.status === "done" ? "Download" : "Download what's finished"}
+          {job.download === "ready" && (
+            <Button variant="primary" url={bgJobs.downloadUrl(job.id)} download>
+              {job.downloadBytes ? `Download (${formatFileSize(job.downloadBytes)})` : "Download"}
             </Button>
           )}
+          {job.download === "preparing" && <Button variant="primary" loading disabled>Preparing download…</Button>}
+          {job.download === "failed" && <Button onClick={onRetryDownload}>Try packing the download again</Button>}
           {!live && <Button variant="plain" tone="critical" onClick={onDelete}>Delete run &amp; files</Button>}
         </InlineStack>
       </BlockStack>
@@ -115,8 +123,11 @@ export function ServerRunsPanel({ refreshKey }: { refreshKey: number }) {
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = () => {
+      if (inFlight) return;
+      inFlight = true;
       bgJobs
         .list()
         .then((list) => {
@@ -126,13 +137,24 @@ export function ServerRunsPanel({ refreshKey }: { refreshKey: number }) {
         })
         .catch(() => undefined)
         .finally(() => {
-          if (!cancelled) timer = setTimeout(poll, anyLive.current ? FAST_POLL_MS : SLOW_POLL_MS);
+          inFlight = false;
+          if (cancelled) return;
+          const delay = document.visibilityState === "hidden" ? HIDDEN_POLL_MS : anyLive.current ? FAST_POLL_MS : SLOW_POLL_MS;
+          timer = setTimeout(poll, delay);
         });
     };
+    // Coming back to the tab refreshes straight away instead of waiting out the slow hidden-tab delay.
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      clearTimeout(timer);
+      poll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     poll();
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [refreshKey]);
 
@@ -157,7 +179,7 @@ export function ServerRunsPanel({ refreshKey }: { refreshKey: number }) {
         </BlockStack>
         {error && <Banner tone="warning" onDismiss={() => setError(null)}><p>{error}</p></Banner>}
         {jobs.map((job) => (
-          <RunCard key={job.id} job={job} onCancel={() => void act(() => bgJobs.cancel(job.id))} onDelete={() => setToDelete(job)} />
+          <RunCard key={job.id} job={job} onCancel={() => void act(() => bgJobs.cancel(job.id))} onDelete={() => setToDelete(job)} onRetryDownload={() => void act(() => bgJobs.prepare(job.id))} />
         ))}
       </BlockStack>
 

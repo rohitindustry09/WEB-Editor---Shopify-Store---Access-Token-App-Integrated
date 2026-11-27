@@ -9,8 +9,9 @@ import { driveJobs, remoteSourceOf } from "@/lib/driveJobsApi";
 import { parseDriveLink } from "@/lib/googleDrive";
 import type { RemoteZipSource } from "@/lib/skuMediaZip";
 
-const FAST_POLL_MS = 600;
-const SLOW_POLL_MS = 5000;
+const FAST_POLL_MS = 1000;
+const SLOW_POLL_MS = 10_000;
+const HIDDEN_POLL_MS = 30_000;
 
 const isActive = (job: DriveJobSnapshot): boolean => job.status === "starting" || job.status === "downloading";
 const percentOf = (job: DriveJobSnapshot): number => (job.total ? Math.min(100, Math.floor((job.received / job.total) * 100)) : 0);
@@ -137,8 +138,11 @@ export function DriveLinkImport({ onSource, disabled }: { onSource: (source: Rem
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = () => {
+      if (inFlight) return;
+      inFlight = true;
       driveJobs
         .list()
         .then((list) => {
@@ -153,13 +157,23 @@ export function DriveLinkImport({ onSource, disabled }: { onSource: (source: Rem
         })
         .catch(() => undefined)
         .finally(() => {
-          if (!cancelled) timer = setTimeout(poll, anyActive.current ? FAST_POLL_MS : SLOW_POLL_MS);
+          inFlight = false;
+          if (cancelled) return;
+          const delay = document.visibilityState === "hidden" ? HIDDEN_POLL_MS : anyActive.current ? FAST_POLL_MS : SLOW_POLL_MS;
+          timer = setTimeout(poll, delay);
         });
     };
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      clearTimeout(timer);
+      poll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     poll();
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
